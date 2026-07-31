@@ -1,4 +1,4 @@
-{"sessionId":"s1","uuid":"u1","parentUuid":null,"type":"user","cwd":"/home/user/proj","timestamp":"2026-01-01T10:00:00Z","message":{"role":"user","content":"How do I write a for loop in python?"}}
+{"sessionId":"s1","uuid":"u1","parentUuid":null,"type":"user","cwd":"/home/user/proj","version":"1.0.0","timestamp":"2026-01-01T10:00:00Z","message":{"role":"user","content":"How do I write a for loop in python?"}}
 {"sessionId":"s1","uuid":"u2","parentUuid":"u1","type":"assistant","timestamp":"2026-01-01T10:00:05Z","message":{"role":"assistant","model":"claude-sonnet-5","content":[{"type":"text","text":"Use `for x in range(10):`"}]}}
 {"sessionId":"s1","uuid":"u3","parentUuid":"u2","type":"user","timestamp":"2026-01-01T10:01:00Z","message":{"role":"user","content":"And a while loop?"}}
 {"sessionId":"s1","uuid":"u4","parentUuid":"u3","type":"assistant","timestamp":"2026-01-01T10:01:05Z","message":{"role":"assistant","model":"claude-sonnet-5","content":[{"type":"text","text":"Use `while cond:`"}]}}

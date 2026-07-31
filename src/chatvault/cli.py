@@ -412,12 +412,13 @@ def search(
 @app.command()
 def stats(
     by: str = typer.Option("platform", "--by", help="model | platform | project | month | tool"),
+    unknown: bool = typer.Option(False, "--unknown", help="Report unmapped 'unknown' blocks by platform, so adapters can be improved incrementally."),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
     config = load_config()
     conn = connect(config)
     try:
-        rows = search_mod.stats(conn, by)
+        rows = search_mod.unknown_block_report(conn) if unknown else search_mod.stats(conn, by)
     finally:
         conn.close()
 
@@ -425,6 +426,15 @@ def stats(
         import json as _json
 
         console.print(_json.dumps([dict(r) for r in rows], indent=2))
+        return
+
+    if unknown:
+        table = Table(title="unknown blocks by platform")
+        table.add_column("platform")
+        table.add_column("count", justify="right")
+        for r in rows:
+            table.add_row(str(r["platform"]), str(r["n"]))
+        console.print(table)
         return
 
     table = Table(title=f"stats by {by}")

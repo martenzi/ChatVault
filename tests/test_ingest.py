@@ -80,3 +80,50 @@ def test_generic_jsonl_fallback_ingests(conn):
     row = conn.execute("SELECT platform, message_count FROM conversations").fetchone()
     assert row["platform"] == "generic"
     assert row["message_count"] == 2
+
+
+def test_windsurf_legacy_adapter_maps_full_schema_correctly(conn):
+    """Regression test for the windsurf_legacy_full schema (protobuf-wire-full-v1),
+    not the thin dialogue-only windsurf_legacy/ export. Covers: per-message model
+    recovery, role bucketing for the full Cascade role vocabulary, tool_name/
+    tool_args extraction, and the type_N fallback for unmapped msg_types."""
+    path = FIXTURES / "windsurf_legacy" / "full_schema_sample.jsonl"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 1
+
+    conv = conn.execute("SELECT * FROM conversations").fetchone()
+    assert conv["platform"] == "windsurf"
+    assert conv["native_id"] == "aaaa1111-2222-3333-4444-555566667777"
+    assert conv["title"] == "Fix the flaky ingest test"
+    assert conv["project"] == "project-x"
+    assert conv["message_count"] == 10
+    # per-message model IS present in the *_full schema (unlike the thin export)
+    assert conv["model_primary"] == "swe-1-6"
+
+    rows = conn.execute(
+        "SELECT role, model FROM messages WHERE conv_id = ? ORDER BY idx", (conv["id"],)
+    ).fetchall()
+    roles = [r["role"] for r in rows]
+    assert roles == ["system", "system", "user", "assistant", "system", "system", "tool", "tool", "tool", "system"]
+    assert rows[2]["model"] == "swe-1-6"  # user message carries its model
+    assert rows[3]["model"] == "swe-1-6"  # assistant message carries its model
+
+    blocks = conn.execute(
+        "SELECT type, tool_name, text FROM blocks WHERE conv_id = ? ORDER BY id", (conv["id"],)
+    ).fetchall()
+    block_types = [b["type"] for b in blocks]
+    assert block_types == [
+        "system",  # memory
+        "system",  # system prompt
+        "text",  # user
+        "text",  # assistant
+        "thinking",  # planner
+        "attachment",  # context
+        "tool_use",  # tool_call
+        "tool_result",
+        "error",  # tool_error
+        "unknown",  # type_99 fallback
+    ]
+    tool_call_block = blocks[6]
+    assert tool_call_block["tool_name"] == "run_tests"
+    assert tool_call_block["text"] == "pytest tests/test_ingest.py -q"

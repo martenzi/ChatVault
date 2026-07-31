@@ -17,13 +17,28 @@ def sniff(path: Path) -> bool:
         return False
     try:
         with path.open("rb") as fh:
-            for line in fh:
+            for i, line in enumerate(fh):
+                if i >= 20:
+                    # Real session files may open with a "summary" line
+                    # ({"type": "summary", "summary": ..., "leafUuid": ...})
+                    # which lacks sessionId/uuid/cwd/version. Scan a handful
+                    # of lines rather than just the first.
+                    break
                 line = line.strip()
                 if not line:
                     continue
                 obj = orjson.loads(line)
+                if not isinstance(obj, dict):
+                    continue
                 keys = set(obj.keys())
-                return {"sessionId", "type"}.issubset(keys) or ("uuid" in keys and "type" in keys)
+                # Genuine Claude Code transcript lines always co-occur with
+                # sessionId, uuid, cwd and version (verified against real
+                # ~/.claude/**/*.jsonl session files). Requiring all of the
+                # session/uuid identity keys together (not just "type", which
+                # other tools' JSONL also use) avoids false positives on
+                # unrelated formats that happen to have a "type" field.
+                if {"sessionId", "uuid", "cwd", "version"}.issubset(keys):
+                    return True
     except (orjson.JSONDecodeError, OSError):
         return False
     return False

@@ -52,32 +52,55 @@ def _detect_jsonl(path: Path, deep: bool) -> FileReport:
     platform, adapter = "unknown", "generic_jsonl"
     if first is not None:
         keys = set(first.keys())
-        if {"sessionId", "type"} & keys or ("uuid" in keys and "type" in keys):
+        # Windsurf/Cascade legacy export: meta line self-declares its origin
+        # via "source": "windsurf_legacy_cascade" (see EXTRACTION_METHOD.md).
+        # Structural fallback (type=="meta" + conversation_id + cascade_file)
+        # covers exports where that string is missing or renamed.
+        if first.get("type") == "meta" and (
+            first.get("source") == "windsurf_legacy_cascade"
+            or ("conversation_id" in keys and "cascade_file" in keys)
+        ):
+            platform, adapter = "windsurf", "windsurf_legacy"
+        # Claude Code session lines always co-occur with sessionId, uuid, cwd
+        # and version (verified against real ~/.claude/**/*.jsonl files).
+        # NOTE: this only peeks the first line, so a session file that opens
+        # with a {"type": "summary", ...} line (no sessionId/cwd/version)
+        # will fall through to generic_jsonl here even though the deep
+        # adapter-level sniff() in adapters/claude_code.py (which scans
+        # several lines) would still correctly claim it during actual ingest.
+        elif {"sessionId", "uuid", "cwd", "version"}.issubset(keys):
             platform, adapter = "claude_code", "claude_code"
+        # Finally check for generic JSONL
         elif {"role", "content"} & keys or {"author", "content"} <= keys:
             platform, adapter = "generic", "generic_jsonl"
 
     conv_count = None
     if deep:
-        sessions: set[str] = set()
-        lines = 0
-        try:
-            with path.open("rb") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    lines += 1
-                    try:
-                        obj = orjson.loads(line)
-                    except orjson.JSONDecodeError:
-                        continue
-                    sid = obj.get("sessionId") if isinstance(obj, dict) else None
-                    if sid:
-                        sessions.add(sid)
-        except OSError:
-            pass
-        conv_count = len(sessions) if sessions else lines
+        if adapter == "windsurf_legacy":
+            # One meta line -> exactly one conversation per file; counting
+            # sessionId (absent) or raw lines here would count messages
+            # instead, wildly inflating the total.
+            conv_count = 1
+        else:
+            sessions: set[str] = set()
+            lines = 0
+            try:
+                with path.open("rb") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        lines += 1
+                        try:
+                            obj = orjson.loads(line)
+                        except orjson.JSONDecodeError:
+                            continue
+                        sid = obj.get("sessionId") if isinstance(obj, dict) else None
+                        if sid:
+                            sessions.add(sid)
+            except OSError:
+                pass
+            conv_count = len(sessions) if sessions else lines
 
     return FileReport(
         path=path,
