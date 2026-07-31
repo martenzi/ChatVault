@@ -220,3 +220,55 @@ def test_cursor_legacy_copilot_adapter_handles_both_subformats(conn):
         ).fetchall()
     ]
     assert texts == ["add a retry with backoff to the fetch loop", "now write a test for the retry logic"]
+
+
+def test_chatgpt_legacy_recovered_adapter_infers_role_from_id_scheme_a(conn):
+    """scheme A: root / root-nextPrompt / <uuid> / <uuid>-nextPrompt."""
+    path = FIXTURES / "chatgpt_legacy_recovered" / "scheme_a_single.json"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 1
+
+    conv = conn.execute("SELECT * FROM conversations").fetchone()
+    assert conv["platform"] == "chatgpt"
+    assert conv["native_id"] == "aaaaaaaa-1111-2222-3333-444444444444"
+    assert conv["title"] == "Debugging a flaky test"
+    assert conv["model_primary"] is None  # genuinely absent from this source, not a parsing gap
+    assert conv["message_count"] == 4  # "root" placeholder excluded
+
+    roles = [
+        r[0]
+        for r in conn.execute(
+            "SELECT role FROM messages WHERE conv_id = ? ORDER BY idx", (conv["id"],)
+        ).fetchall()
+    ]
+    assert roles == ["user", "assistant", "user", "assistant"]
+
+
+def test_chatgpt_legacy_recovered_adapter_infers_role_from_id_scheme_b(conn):
+    """scheme B: aaa1<hex> placeholder / aaa2<hex> user / plain uuid assistant."""
+    path = FIXTURES / "chatgpt_legacy_recovered" / "scheme_b_single.json"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 1
+
+    conv = conn.execute("SELECT * FROM conversations").fetchone()
+    assert conv["message_count"] == 4  # "aaa1..." placeholder excluded
+
+    roles = [
+        r[0]
+        for r in conn.execute(
+            "SELECT role FROM messages WHERE conv_id = ? ORDER BY idx", (conv["id"],)
+        ).fetchall()
+    ]
+    assert roles == ["user", "assistant", "user", "assistant"]
+
+
+def test_chatgpt_legacy_recovered_adapter_handles_bulk_list_and_skips_empty(conn):
+    path = FIXTURES / "chatgpt_legacy_recovered" / "bulk_export.json"
+    summary = ingest.ingest_path(conn, path)
+    # the second conversation in the list has an empty messages array and
+    # must be skipped, not inserted as an empty shell
+    assert summary.totals["inserted"] == 1
+
+    conv = conn.execute("SELECT * FROM conversations").fetchone()
+    assert conv["native_id"] == "cccccccc-1111-2222-3333-444444444444"
+    assert conv["message_count"] == 2  # "root" placeholder excluded, 2 real turns remain

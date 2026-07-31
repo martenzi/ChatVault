@@ -15,6 +15,7 @@ def register_late_adapters() -> None:
     """Import adapters that depend on modules defined later in the build."""
     from chatvault.adapters import (
         chatgpt,
+        chatgpt_legacy_recovered,
         cursor_legacy,
         cursor_legacy_copilot,
         generic_jsonl,
@@ -22,7 +23,12 @@ def register_late_adapters() -> None:
         windsurf_legacy,
     )
 
+    # chatgpt (official mapping/current_node export) before
+    # chatgpt_legacy_recovered (DOM-scraped, no "mapping" key) — order
+    # matters only if a file could satisfy both sniffs, which it can't
+    # (disjoint required keys), but keep the more authoritative source first.
     _REGISTRY.setdefault("chatgpt", chatgpt)
+    _REGISTRY.setdefault("chatgpt_legacy_recovered", chatgpt_legacy_recovered)
     _REGISTRY.setdefault("windsurf_legacy", windsurf_legacy)
     _REGISTRY.setdefault("cursor_legacy", cursor_legacy)
     _REGISTRY.setdefault("vscode_legacy", vscode_legacy)

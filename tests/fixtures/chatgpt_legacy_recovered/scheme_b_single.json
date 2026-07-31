@@ -1,0 +1,15 @@
+{
+  "id": "bbbbbbbb-1111-2222-3333-444444444444",
+  "title": "Weekend hiking recommendations",
+  "isArchived": false,
+  "accountUserId": "user-fake0000000000000000__deadbeef-1111-1111-1111-111111111111",
+  "authUserId": "user-fake0000000000000000",
+  "updateTime": 1731000000.5,
+  "messages": [
+    {"id": "aaa1e307-3df8-483a-95f3-0e911ff6f4b1", "text": ""},
+    {"id": "aaa2e83e-7a29-4a72-9506-e39054ba67a7", "text": "Any good hiking trails near Malmo for this weekend?"},
+    {"id": "7bb655a8-56b6-451c-ac2b-dc3c1822e482", "text": "Try Sofiero or the coastal path near Kullaberg."},
+    {"id": "aaa2e7f0-9dc9-46c0-b86c-a4b8ce31662b", "text": "Which one is better for a beginner?"},
+    {"id": "aa950372-6318-4354-a3fd-64a6171d82e7", "text": "Kullaberg has an easier loop, Sofiero is flatter still."}
+  ]
+}

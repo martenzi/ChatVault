@@ -1,0 +1,15 @@
+{
+  "id": "aaaaaaaa-1111-2222-3333-444444444444",
+  "title": "Debugging a flaky test",
+  "isArchived": false,
+  "accountUserId": "user-fake0000000000000000__deadbeef-0000-0000-0000-000000000000",
+  "authUserId": "user-fake0000000000000000",
+  "updateTime": 1730225640.176,
+  "messages": [
+    {"id": "root", "text": ""},
+    {"id": "root-nextPrompt", "text": "My ingest test is flaky, any idea why?"},
+    {"id": "b6693089-b112-422b-9ae6-835c5893e7ba", "text": "It's likely a shared fixture leaking state between tests."},
+    {"id": "b6693089-b112-422b-9ae6-835c5893e7ba-nextPrompt", "text": "How do I isolate it?"},
+    {"id": "e569d230-7c4e-4fc1-911e-880e47999a21", "text": "Use a fresh in-memory database per test via a fixture."}
+  ]
+}
