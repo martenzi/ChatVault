@@ -12,12 +12,23 @@ _REGISTRY: dict[str, ModuleType] = {
 
 
 def register_late_adapters() -> None:
-    """Import adapters that depend on modules defined later in the build (chatgpt, generic_jsonl)."""
-    from chatvault.adapters import chatgpt, generic_jsonl, windsurf_legacy
+    """Import adapters that depend on modules defined later in the build."""
+    from chatvault.adapters import (
+        chatgpt,
+        cursor_legacy,
+        cursor_legacy_copilot,
+        generic_jsonl,
+        vscode_legacy,
+        windsurf_legacy,
+    )
 
     _REGISTRY.setdefault("chatgpt", chatgpt)
-    _REGISTRY.setdefault("generic_jsonl", generic_jsonl)
     _REGISTRY.setdefault("windsurf_legacy", windsurf_legacy)
+    _REGISTRY.setdefault("cursor_legacy", cursor_legacy)
+    _REGISTRY.setdefault("vscode_legacy", vscode_legacy)
+    _REGISTRY.setdefault("cursor_legacy_copilot", cursor_legacy_copilot)
+    # Deliberately last: permissive fallback, must not shadow specific adapters.
+    _REGISTRY.setdefault("generic_jsonl", generic_jsonl)
 
 
 def get(adapter_name: str) -> ModuleType:
@@ -28,10 +39,9 @@ def get(adapter_name: str) -> ModuleType:
 
 def detect(path: Path) -> ModuleType | None:
     register_late_adapters()
-    # Try specific adapters before the generic fallback.
-    ordered = [n for n in _REGISTRY if n not in ("generic_jsonl", "windsurf_legacy")] + (
-        ["windsurf_legacy"] if "windsurf_legacy" in _REGISTRY else []
-    ) + (
+    # Try every specific adapter before the generic fallback, which is
+    # registered last and must stay last in this ordering too.
+    ordered = [n for n in _REGISTRY if n != "generic_jsonl"] + (
         ["generic_jsonl"] if "generic_jsonl" in _REGISTRY else []
     )
     for adapter_name in ordered:

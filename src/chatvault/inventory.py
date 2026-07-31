@@ -47,19 +47,50 @@ def _peek_jsonl_first_line(path: Path) -> dict | None:
     return None
 
 
+# Adapters whose JSONL shape is "line 0 is a meta record, everything else is
+# one event/message" — always exactly one conversation per file. Counting
+# sessionId (absent) or raw lines for these would count messages instead,
+# wildly inflating the total. Keyed by the `extraction` fingerprint each
+# exporter stamps into its own meta line (tools/corpus_full/export_*.py,
+# tools/cascade_decrypt/cascade_export_full.py).
+_EXTRACTION_TO_PLATFORM_ADAPTER = {
+    "protobuf-wire-full-v1": ("windsurf", "windsurf_legacy"),
+    "protobuf-wire-v1": ("windsurf", "windsurf_legacy"),  # thin export; do not ingest, see CORPUS_FULL_SOT
+    "cursor-composer-full-v1": ("cursor", "cursor_legacy"),
+    "vscode-chatsessions-full-v1": ("vscode", "vscode_legacy"),
+    "cursor-interactive-sessions-full-v1": ("cursor_copilot", "cursor_legacy_copilot"),
+    "cursor-prompts-full-v1": ("cursor_copilot", "cursor_legacy_copilot"),
+}
+_ONE_CONVERSATION_PER_FILE_ADAPTERS = {
+    "windsurf_legacy",
+    "cursor_legacy",
+    "vscode_legacy",
+    "cursor_legacy_copilot",
+}
+
+
 def _detect_jsonl(path: Path, deep: bool) -> FileReport:
     first = _peek_jsonl_first_line(path)
     platform, adapter = "unknown", "generic_jsonl"
     if first is not None:
         keys = set(first.keys())
-        # Windsurf/Cascade legacy export: meta line self-declares its origin
-        # via "source": "windsurf_legacy_cascade" (see EXTRACTION_METHOD.md).
-        # Structural fallback (type=="meta" + conversation_id + cascade_file)
-        # covers exports where that string is missing or renamed.
-        if first.get("type") == "meta" and (
-            first.get("source") == "windsurf_legacy_cascade"
-            or ("conversation_id" in keys and "cascade_file" in keys)
-        ):
+        extraction_match = (
+            _EXTRACTION_TO_PLATFORM_ADAPTER.get(first.get("extraction"))
+            if first.get("type") == "meta"
+            else None
+        )
+        # Windsurf's older thin export predates the "extraction" field having
+        # this exact string on some files; keep the structural fallback.
+        legacy_windsurf_fallback = (
+            first.get("type") == "meta"
+            and (
+                first.get("source") == "windsurf_legacy_cascade"
+                or ("conversation_id" in keys and "cascade_file" in keys)
+            )
+        )
+        if extraction_match:
+            platform, adapter = extraction_match
+        elif legacy_windsurf_fallback:
             platform, adapter = "windsurf", "windsurf_legacy"
         # Claude Code session lines always co-occur with sessionId, uuid, cwd
         # and version (verified against real ~/.claude/**/*.jsonl files).
@@ -76,10 +107,7 @@ def _detect_jsonl(path: Path, deep: bool) -> FileReport:
 
     conv_count = None
     if deep:
-        if adapter == "windsurf_legacy":
-            # One meta line -> exactly one conversation per file; counting
-            # sessionId (absent) or raw lines here would count messages
-            # instead, wildly inflating the total.
+        if adapter in _ONE_CONVERSATION_PER_FILE_ADAPTERS:
             conv_count = 1
         else:
             sessions: set[str] = set()

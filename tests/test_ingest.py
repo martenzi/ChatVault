@@ -127,3 +127,96 @@ def test_windsurf_legacy_adapter_maps_full_schema_correctly(conn):
     tool_call_block = blocks[6]
     assert tool_call_block["tool_name"] == "run_tests"
     assert tool_call_block["text"] == "pytest tests/test_ingest.py -q"
+
+
+def test_cursor_legacy_adapter_bundles_text_and_tool_blocks(conn):
+    """One Cursor bubble can carry text AND a tool call at once — both must
+    become separate blocks on a single message, not separate messages."""
+    path = FIXTURES / "cursor_legacy" / "sample_composer.jsonl"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 1
+
+    conv = conn.execute("SELECT * FROM conversations").fetchone()
+    assert conv["platform"] == "cursor"
+    assert conv["native_id"] == "c0mp0ser-1111-2222-3333-444455556666"
+    assert conv["title"] == "Fix docker compose networking"
+    assert conv["project"] == "project-x"
+    assert conv["message_count"] == 3
+    assert conv["model_primary"] == "claude-sonnet-4-6"
+
+    tool_msg = conn.execute(
+        "SELECT id FROM messages WHERE conv_id = ? AND idx = 1", (conv["id"],)
+    ).fetchone()
+    blocks = conn.execute(
+        "SELECT type, tool_name, text FROM blocks WHERE msg_id = ? ORDER BY idx", (tool_msg["id"],)
+    ).fetchall()
+    assert [b["type"] for b in blocks] == ["text", "tool_use", "tool_result"]
+    assert blocks[1]["tool_name"] == "read_file"
+    assert blocks[2]["type"] == "tool_result"
+
+
+def test_vscode_legacy_adapter_classifies_events_by_role_and_kind(conn):
+    path = FIXTURES / "vscode_legacy" / "sample_session.jsonl"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 1
+
+    conv = conn.execute("SELECT * FROM conversations").fetchone()
+    assert conv["platform"] == "vscode"
+    assert conv["native_id"] == "vsc0de-1111-2222-3333-444455556666"
+    assert conv["title"] == "Rename detective script"
+    assert conv["message_count"] == 5
+
+    rows = conn.execute(
+        "SELECT m.role, b.type, b.tool_name FROM messages m JOIN blocks b ON b.msg_id = m.id "
+        "WHERE m.conv_id = ? ORDER BY m.idx", (conv["id"],)
+    ).fetchall()
+    assert [(r["role"], r["type"]) for r in rows] == [
+        ("user", "text"),
+        ("assistant", "thinking"),
+        ("tool", "tool_use"),
+        ("assistant", "text"),
+        ("system", "unknown"),  # the trailing per-request "result" blob
+    ]
+    assert rows[2]["tool_name"] == "copilot_renameFile"
+
+
+def test_cursor_legacy_copilot_adapter_handles_both_subformats(conn):
+    session_path = FIXTURES / "cursor_legacy_copilot" / "sample_session.jsonl"
+    prompts_path = FIXTURES / "cursor_legacy_copilot" / "sample_prompts.jsonl"
+
+    summary = ingest.ingest_path(conn, session_path)
+    assert summary.totals["inserted"] == 1
+    session_conv = conn.execute(
+        "SELECT * FROM conversations WHERE native_id = ?", ("cpsess-1111-2222-3333-444455556666",)
+    ).fetchone()
+    assert session_conv["platform"] == "cursor_copilot"
+    assert session_conv["message_count"] == 3
+    roles = [
+        r[0]
+        for r in conn.execute(
+            "SELECT role FROM messages WHERE conv_id = ? ORDER BY idx", (session_conv["id"],)
+        ).fetchall()
+    ]
+    assert roles == ["user", "tool", "assistant"]
+
+    summary2 = ingest.ingest_path(conn, prompts_path)
+    assert summary2.totals["inserted"] == 1
+    prompts_conv = conn.execute(
+        "SELECT * FROM conversations WHERE native_id = ?", ("def456_prompts",)
+    ).fetchone()
+    # a raw prompt dump has no replies — every message is a standalone user turn
+    assert prompts_conv["message_count"] == 2
+    prompt_roles = [
+        r[0]
+        for r in conn.execute(
+            "SELECT role FROM messages WHERE conv_id = ? ORDER BY idx", (prompts_conv["id"],)
+        ).fetchall()
+    ]
+    assert prompt_roles == ["user", "user"]
+    texts = [
+        r[0]
+        for r in conn.execute(
+            "SELECT text FROM v_blocks WHERE conv_id = ? ORDER BY id", (prompts_conv["id"],)
+        ).fetchall()
+    ]
+    assert texts == ["add a retry with backoff to the fetch loop", "now write a test for the retry logic"]

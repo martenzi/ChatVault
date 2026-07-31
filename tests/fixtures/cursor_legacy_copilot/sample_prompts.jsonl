@@ -1,0 +1,2 @@
+{"type": "meta", "editor": "cursor", "product": "aiService.prompts", "source": "cursor_legacy_copilot", "extraction": "cursor-prompts-full-v1", "session_id": "def456_prompts", "title": "prompts dump — app_tracker", "project": "app_tracker", "workspace_uri": "/home/user/Developer/app_tracker", "workspace_hash": "def456", "raw_events": 1, "model_metadata_present": false}
+{"idx": 0, "role": "prompts_dump", "content": [{"text": "add a retry with backoff to the fetch loop"}, {"text": "now write a test for the retry logic"}], "text": ""}
