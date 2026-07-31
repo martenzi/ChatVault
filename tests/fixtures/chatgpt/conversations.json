@@ -1,0 +1,46 @@
+[
+  {
+    "title": "Test convo",
+    "create_time": 1770000000,
+    "update_time": 1770000100,
+    "conversation_id": "conv-1",
+    "current_node": "b",
+    "mapping": {
+      "root": {"id": "root", "message": null, "parent": null, "children": ["a"]},
+      "a": {
+        "id": "a",
+        "parent": "root",
+        "children": ["b"],
+        "message": {
+          "id": "a",
+          "author": {"role": "user"},
+          "create_time": 1770000000,
+          "content": {"content_type": "text", "parts": ["What is a hash prefix continuation check?"]}
+        }
+      },
+      "b": {
+        "id": "b",
+        "parent": "a",
+        "children": ["c-abandoned"],
+        "message": {
+          "id": "b",
+          "author": {"role": "assistant"},
+          "create_time": 1770000050,
+          "metadata": {"model_slug": "gpt-4o"},
+          "content": {"content_type": "text", "parts": ["It compares message hashes up to the shorter length."]}
+        }
+      },
+      "c-abandoned": {
+        "id": "c-abandoned",
+        "parent": "b",
+        "children": [],
+        "message": {
+          "id": "c-abandoned",
+          "author": {"role": "user"},
+          "create_time": 1770000090,
+          "content": {"content_type": "text", "parts": ["This branch was abandoned/regenerated."]}
+        }
+      }
+    }
+  }
+]

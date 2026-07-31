@@ -1,0 +1,27 @@
+# {{ conv.title or "Untitled" }}
+
+- platform: {{ conv.platform }}
+- model: {{ conv.model_primary or "unknown" }}
+- date: {{ (conv.started_at or "")[:10] }}
+- uid: `{{ conv.uid }}`
+{% if conv.tags %}
+- tags: {{ conv.tags | join(", ") }}
+{% endif %}
+
+---
+
+{% for msg in conv.messages %}
+{% if msg.role in ("user", "assistant") %}
+## {{ msg.role | capitalize }}
+
+{% for block in msg.blocks %}
+{% if block.type in ("text", "code") %}
+{{ block.text }}
+
+{% elif block.type in ("tool_use", "tool_result") %}
+> tool: {{ block.tool_name or "unknown" }} (collapsed)
+
+{% endif %}
+{% endfor %}
+{% endif %}
+{% endfor %}

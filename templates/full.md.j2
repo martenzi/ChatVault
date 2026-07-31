@@ -1,0 +1,59 @@
+# {{ conv.title or "Untitled" }}
+
+- platform: {{ conv.platform }}
+- model: {{ conv.model_primary or "unknown" }}
+- started: {{ conv.started_at }}
+- ended: {{ conv.ended_at }}
+- uid: `{{ conv.uid }}`
+- messages: {{ conv.messages | length }}
+{% if conv.tags %}
+- tags: {{ conv.tags | join(", ") }}
+{% endif %}
+
+---
+
+{% for msg in conv.messages %}
+## {{ msg.role | capitalize }}{% if msg.model %} ({{ msg.model }}){% endif %}
+
+*{{ msg.created_at or "" }}*
+
+{% for block in msg.blocks %}
+{% if block.type == "text" %}
+{{ block.text }}
+
+{% elif block.type == "thinking" %}
+<details><summary>thinking</summary>
+
+{{ block.text }}
+
+</details>
+
+{% elif block.type == "tool_use" %}
+**tool_use: {{ block.tool_name or "unknown" }}**
+```json
+{{ block.text }}
+```
+
+{% elif block.type == "tool_result" %}
+**tool_result{% if block.tool_name %}: {{ block.tool_name }}{% endif %}**
+```
+{{ block.text }}
+```
+
+{% elif block.type == "code" %}
+```
+{{ block.text }}
+```
+
+{% elif block.type == "image" %}
+*[image block]*
+
+{% elif block.type == "error" %}
+**error:** {{ block.text }}
+
+{% else %}
+*[{{ block.type }} block]*
+
+{% endif %}
+{% endfor %}
+{% endfor %}

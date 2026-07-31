@@ -1,0 +1,7 @@
+# ChatVault digest
+
+{{ conversations | length }} conversation(s)
+
+{% for conv in conversations %}
+- {{ (conv.started_at or "")[:10] or "undated" }} · {{ conv.platform }} · **{{ conv.title or "Untitled" }}** ({{ conv.messages | length }} messages) — `{{ conv.uid }}`
+{% endfor %}

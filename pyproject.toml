@@ -1,0 +1,26 @@
+[project]
+name = "chatvault"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "typer>=0.12",
+  "rich>=13",
+  "jinja2>=3.1",
+  "orjson>=3.10",
+  "python-dateutil>=2.9",
+  "neo4j>=5.23",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-cov"]
+semantic = ["sqlite-vec>=0.1", "sentence-transformers>=3"]
+
+[project.scripts]
+chatvault = "chatvault.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chatvault"]

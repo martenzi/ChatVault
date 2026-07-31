@@ -1,0 +1,2 @@
+{"role": "user", "content": "help me write a bash script", "timestamp": "2026-02-01T09:00:00Z"}
+{"role": "assistant", "content": "Sure, here's a starting point: #!/bin/bash", "timestamp": "2026-02-01T09:00:10Z"}

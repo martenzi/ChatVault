@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+db/
+exports/
+neo4j/
+raw/*
+!raw/_manifest.jsonl
+.pytest_cache/
+*.egg-info/
+.claude/settings.local.json
