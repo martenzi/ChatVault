@@ -7,6 +7,9 @@ exports/
 neo4j/
 raw/*
 !raw/_manifest.jsonl
+raw_exclusions/*
+!raw_exclusions/_why.md
 .pytest_cache/
 *.egg-info/
 .claude/settings.local.json
+.DS_Store

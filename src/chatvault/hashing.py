@@ -36,3 +36,11 @@ def make_uid(platform: str, native_id: str | None, content_hash: str) -> str:
     if native_id:
         return f"{platform}:{native_id}"
     return f"{platform}:h:{content_hash}"
+
+
+def normalize_note(note: str) -> str:
+    return " ".join(note.strip().split())
+
+
+def note_hash(note: str) -> str:
+    return hashlib.sha256(normalize_note(note).encode("utf-8")).hexdigest()

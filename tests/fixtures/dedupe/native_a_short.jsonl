@@ -1,0 +1,5 @@
+{"sessionId":"dedupe-a","uuid":"a1","parentUuid":null,"type":"user","cwd":"/proj","version":"1.0.0","timestamp":"2026-01-01T10:00:00Z","message":{"role":"user","content":"What's the fastest way to sort a list in Python?"}}
+{"sessionId":"dedupe-a","uuid":"a2","parentUuid":"a1","type":"assistant","timestamp":"2026-01-01T10:00:05Z","message":{"role":"assistant","model":"claude-sonnet-5","content":[{"type":"text","text":"Use the built-in sorted() function or list.sort()."}]}}
+{"sessionId":"dedupe-a","uuid":"a3","parentUuid":"a2","type":"user","timestamp":"2026-01-01T10:01:00Z","message":{"role":"user","content":"What about sorting by a custom key?"}}
+{"sessionId":"dedupe-a","uuid":"a4","parentUuid":"a3","type":"assistant","timestamp":"2026-01-01T10:01:05Z","message":{"role":"assistant","model":"claude-sonnet-5","content":[{"type":"text","text":"Pass a key= function, e.g. sorted(items, key=len)."}]}}
+{"sessionId":"dedupe-a","uuid":"a5","parentUuid":"a4","type":"user","timestamp":"2026-01-01T10:02:00Z","message":{"role":"user","content":"Thanks, that's exactly what I needed."}}

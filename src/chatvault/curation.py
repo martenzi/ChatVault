@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timezone
 
+from chatvault import hashing
+
 _TARGET_TABLE = {"conversation": "conversations", "message": "messages", "block": "blocks"}
 _TARGET_VIEW = {"conversation": "v_conversations", "message": "v_messages", "block": "v_blocks"}
 
@@ -54,13 +56,30 @@ def tag_list(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 def note_add(conn: sqlite3.Connection, target_type: str, target_id: int, text: str) -> int:
     if target_type not in _TARGET_TABLE:
         raise ValueError(f"target_type must be one of {list(_TARGET_TABLE)}, got {target_type!r}")
+    note_hash = hashing.note_hash(text)
+    existing = conn.execute(
+        "SELECT id FROM annotations WHERE target_type = ? AND target_id = ? AND note_hash = ?",
+        (target_type, target_id, note_hash),
+    ).fetchone()
+    if existing is not None:
+        return existing["id"]
     now = _now()
     cur = conn.execute(
-        "INSERT INTO annotations (target_type, target_id, note, created_at) VALUES (?, ?, ?, ?)",
-        (target_type, target_id, text, now),
+        "INSERT INTO annotations (target_type, target_id, note, note_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+        (target_type, target_id, text, note_hash, now),
     )
     conn.commit()
     return cur.lastrowid
+
+
+def matching_count(conn: sqlite3.Connection, target: str, where: str, currently_excluded: bool = False) -> int:
+    """Cheap precount used by the CLI to decide whether a bulk exclude/restore
+    needs an automatic backup first (spec: >100 targets)."""
+    table = _table_for(target)
+    flag = 1 if currently_excluded else 0
+    return conn.execute(
+        f"SELECT COUNT(*) FROM {table} WHERE excluded = {flag} AND ({where})"  # noqa: S608
+    ).fetchone()[0]
 
 
 def exclude(conn: sqlite3.Connection, target: str, where: str, reason: str | None) -> int:

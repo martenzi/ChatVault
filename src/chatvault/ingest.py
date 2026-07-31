@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from chatvault import adapters, hashing, loader
+from chatvault.config import Config
 
 KNOWN_EXTENSIONS = {".json", ".jsonl"}
 
@@ -37,10 +38,25 @@ class IngestSummary:
         return totals
 
 
-def _iter_candidate_files(path: Path) -> list[Path]:
+def _iter_candidate_files(path: Path, exclude_dir: Path | None = None) -> list[Path]:
+    exclude_resolved = exclude_dir.resolve() if exclude_dir else None
+
+    def _is_excluded(p: Path) -> bool:
+        if exclude_resolved is None:
+            return False
+        try:
+            p.resolve().relative_to(exclude_resolved)
+            return True
+        except ValueError:
+            return False
+
     if path.is_file():
-        return [path]
-    return sorted(p for p in path.rglob("*") if p.is_file() and p.suffix.lower() in KNOWN_EXTENSIONS)
+        return [] if _is_excluded(path) else [path]
+    return sorted(
+        p
+        for p in path.rglob("*")
+        if p.is_file() and p.suffix.lower() in KNOWN_EXTENSIONS and not _is_excluded(p)
+    )
 
 
 def ingest_path(
@@ -48,10 +64,31 @@ def ingest_path(
     path: Path,
     adapter_name: str | None = None,
     dry_run: bool = False,
+    force: bool = False,
+    config: Config | None = None,
 ) -> IngestSummary:
+    exclude_dir = None
+    if config is not None:
+        from chatvault import sources
+
+        sources.guard_raw_exclusions(config, path, force)
+        candidate_exclude_dir = config.root / "raw_exclusions"
+        # Only filter raw_exclusions/ out of a broader walk (e.g. path is an
+        # ancestor like CHATVAULT_ROOT itself). If path targets raw_exclusions/
+        # directly, the guard above already required --force to get this far,
+        # so honor that and don't then silently filter every file back out.
+        try:
+            path.resolve().relative_to(candidate_exclude_dir.resolve())
+            targets_exclusions_dir = True
+        except ValueError:
+            targets_exclusions_dir = path.resolve() == candidate_exclude_dir.resolve()
+        if not targets_exclusions_dir:
+            exclude_dir = candidate_exclude_dir
+
+    root_dir = str((path if path.is_dir() else path.parent).resolve())
     summary = IngestSummary()
 
-    for file_path in _iter_candidate_files(path):
+    for file_path in _iter_candidate_files(path, exclude_dir):
         mod = adapters.get(adapter_name) if adapter_name else adapters.detect(file_path)
         if mod is None:
             summary.files.append(FileIngestResult(file_path, "skipped_no_adapter"))
@@ -62,6 +99,12 @@ def ingest_path(
             "SELECT id, status FROM source_files WHERE sha256 = ?", (sha,)
         ).fetchone()
         if existing is not None and existing["status"] == "ok":
+            if not dry_run:
+                conn.execute(
+                    "UPDATE source_files SET last_seen_at = ? WHERE id = ?",
+                    (datetime.now(timezone.utc).isoformat(), existing["id"]),
+                )
+                conn.commit()
             summary.files.append(FileIngestResult(file_path, "skipped_dup", adapter=mod.name))
             continue
 
@@ -80,11 +123,13 @@ def ingest_path(
         except Exception as exc:  # noqa: BLE001
             conn.execute(
                 """
-                INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, error)
-                VALUES (?, ?, ?, ?, ?, ?, 'failed', ?)
-                ON CONFLICT(sha256) DO UPDATE SET status='failed', error=excluded.error, ingested_at=excluded.ingested_at
+                INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, error, kind, last_seen_at, root_dir)
+                VALUES (?, ?, ?, ?, ?, ?, 'failed', ?, 'frozen', ?, ?)
+                ON CONFLICT(sha256) DO UPDATE SET
+                    status='failed', error=excluded.error, ingested_at=excluded.ingested_at,
+                    last_seen_at=excluded.last_seen_at, root_dir=excluded.root_dir
                 """,
-                (str(file_path), sha, mod.platform, mod.name, file_path.stat().st_size, now, str(exc)),
+                (str(file_path), sha, mod.platform, mod.name, file_path.stat().st_size, now, str(exc), now, root_dir),
             )
             conn.commit()
             summary.files.append(FileIngestResult(file_path, "failed", adapter=mod.name, error=str(exc)))
@@ -92,11 +137,13 @@ def ingest_path(
 
         cur = conn.execute(
             """
-            INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status)
-            VALUES (?, ?, ?, ?, ?, ?, 'ok')
-            ON CONFLICT(sha256) DO UPDATE SET status='ok', error=NULL, ingested_at=excluded.ingested_at
+            INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, kind, last_seen_at, root_dir)
+            VALUES (?, ?, ?, ?, ?, ?, 'ok', 'frozen', ?, ?)
+            ON CONFLICT(sha256) DO UPDATE SET
+                status='ok', error=NULL, ingested_at=excluded.ingested_at,
+                last_seen_at=excluded.last_seen_at, root_dir=excluded.root_dir
             """,
-            (str(file_path), sha, mod.platform, mod.name, file_path.stat().st_size, now),
+            (str(file_path), sha, mod.platform, mod.name, file_path.stat().st_size, now, now, root_dir),
         )
         source_file_id = cur.lastrowid or conn.execute(
             "SELECT id FROM source_files WHERE sha256 = ?", (sha,)
@@ -115,5 +162,10 @@ def ingest_path(
                 result.flagged += 1
         conn.commit()
         summary.files.append(result)
+
+    if not dry_run:
+        from chatvault import dedupe
+
+        dedupe.scan_candidates(conn)
 
     return summary

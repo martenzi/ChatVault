@@ -5,6 +5,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from chatvault import hashing
 from chatvault.config import Config
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
@@ -57,6 +58,30 @@ def migrate(config: Config) -> list[str]:
             )
             conn.commit()
             applied.append(path.name)
+
+        if applied:
+            _backfill_note_hashes(conn)
+
         return applied
     finally:
         conn.close()
+
+
+def _backfill_note_hashes(conn: sqlite3.Connection) -> None:
+    """Migration 002 adds annotations.note_hash but can't populate it in pure
+    SQL (no built-in SHA-256). Runs after every migrate() call — a no-op once
+    every row has a hash, and a no-op entirely on a database that predates
+    migration 002 having ever run (the column won't exist yet's not possible
+    here since this only runs after applying pending migrations, so 002 is
+    always present by this point if it was ever pending)."""
+    try:
+        rows = conn.execute("SELECT id, note FROM annotations WHERE note_hash IS NULL").fetchall()
+    except sqlite3.OperationalError:
+        return  # annotations.note_hash doesn't exist yet (shouldn't happen post-migrate, defensive only)
+    for row in rows:
+        conn.execute(
+            "UPDATE annotations SET note_hash = ? WHERE id = ?",
+            (hashing.note_hash(row["note"]), row["id"]),
+        )
+    if rows:
+        conn.commit()
