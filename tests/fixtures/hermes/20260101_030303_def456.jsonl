@@ -1,0 +1,5 @@
+{"role":"session_meta","tools":[{"type":"function","function":{"name":"terminal","description":"Run a shell command"}}],"model":"gemini-3-flash-preview","platform":"telegram","timestamp":"2026-01-01T03:03:03.000000"}
+{"role":"user","content":"What's 2+2?","timestamp":"2026-01-01T03:03:04.000000"}
+{"role":"assistant","content":"Let me compute that.","reasoning":null,"finish_reason":"tool_calls","tool_calls":[{"id":"call_9","call_id":"call_9","type":"function","function":{"name":"execute_code","arguments":"{\"code\":\"print(2+2)\"}"}}],"timestamp":"2026-01-01T03:03:05.000000"}
+{"role":"tool","tool_call_id":"call_9","content":"4","timestamp":"2026-01-01T03:03:06.000000"}
+{"role":"assistant","content":"The answer is 4.","timestamp":"2026-01-01T03:03:07.000000"}

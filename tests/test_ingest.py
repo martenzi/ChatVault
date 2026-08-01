@@ -272,3 +272,178 @@ def test_chatgpt_legacy_recovered_adapter_handles_bulk_list_and_skips_empty(conn
     conv = conn.execute("SELECT * FROM conversations").fetchone()
     assert conv["native_id"] == "cccccccc-1111-2222-3333-444444444444"
     assert conv["message_count"] == 2  # "root" placeholder excluded, 2 real turns remain
+
+
+def test_openclaw_adapter_maps_role_model_and_timestamps(conn):
+    """Regression test for the generic_jsonl fallback's total failure on this
+    format: role lives nested under message.role (not a top-level key), and
+    model is carried by separate model_change/custom(model-snapshot) events,
+    not a per-message "model" key. Forcing generic_jsonl on this fixture
+    would produce role="unknown" and model=NULL for every row; timestamp
+    happens to work by accident since "timestamp" is one of its _TIME_KEYS."""
+    path = FIXTURES / "openclaw" / "session1.jsonl"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 1
+
+    conv = conn.execute("SELECT * FROM conversations").fetchone()
+    assert conv["platform"] == "openclaw"
+    assert conv["native_id"] == "aaaa1111-2222-3333-4444-555566667777"
+    assert conv["project"] == "workspace"
+    assert conv["title"] == "Can you check the deployment status?"
+    assert conv["started_at"] == "2026-01-01T00:00:00.000Z"
+    assert conv["ended_at"] == "2026-01-01T00:00:07.000Z"
+    # session/model_change/thinking_level_change lines are bookkeeping, not
+    # turns: 4 "message" events + 1 compaction + 1 unmapped-role message = 6.
+    assert conv["message_count"] == 6
+
+    rows = conn.execute(
+        "SELECT role, model FROM messages WHERE conv_id = ? ORDER BY idx", (conv["id"],)
+    ).fetchall()
+    assert [r["role"] for r in rows] == ["user", "assistant", "tool", "assistant", "system", "system"]
+    assert rows[0]["model"] is None  # user messages never carry a model
+    assert rows[1]["model"] == "anthropic/claude-haiku-4-5"  # from model_change
+    assert rows[2]["model"] is None  # toolResult
+    assert rows[3]["model"] == "google-vertex/gemini-3-flash-preview"  # from custom/model-snapshot
+    assert rows[4]["model"] is None  # compaction, synthesised as system
+    assert rows[5]["model"] is None  # unmapped "developer" role -> system, no model
+
+    blocks = conn.execute(
+        "SELECT type, tool_name, text FROM blocks WHERE conv_id = ? ORDER BY id", (conv["id"],)
+    ).fetchall()
+    assert [b["type"] for b in blocks] == ["text", "tool_use", "tool_result", "text", "system", "unknown"]
+    assert blocks[1]["tool_name"] == "session_status"
+    assert blocks[2]["text"] == "All systems nominal."
+    # the unmapped content-item type must be preserved losslessly in raw_json
+    unknown_raw = conn.execute(
+        "SELECT raw_json FROM blocks WHERE conv_id = ? AND type = 'unknown'", (conv["id"],)
+    ).fetchone()["raw_json"]
+    assert "scratch notes" in unknown_raw
+
+
+def test_openclaw_adapter_discovers_reset_backup_with_compound_extension(conn):
+    """OpenClaw writes pre-reset backups as "<uuid>.jsonl.reset[.<ts>]" —
+    Path.suffix on that is NOT ".jsonl", so both ingest.py's file-discovery
+    gate and a naive sniff() would silently drop it. Must be found via glob
+    pattern on the filename, without renaming anything on disk."""
+    path = (
+        FIXTURES
+        / "openclaw"
+        / "bbbb2222-3333-4444-5555-666677778888.jsonl.reset.2026-01-02T00-00-00.000Z"
+    )
+    assert path.exists()  # sanity: the odd-extension fixture really has no ".jsonl" suffix
+    assert path.suffix != ".jsonl"
+
+    # ingest_path(<parent dir>) must discover this file via directory walk,
+    # not just direct-file ingestion — that's the actual discovery gate.
+    summary = ingest.ingest_path(conn, path.parent)
+    result = next(f for f in summary.files if f.path == path)
+    assert result.status == "ok"
+    assert result.adapter == "openclaw"
+
+    conv = conn.execute(
+        "SELECT * FROM conversations WHERE native_id = ?",
+        ("bbbb2222-3333-4444-5555-666677778888",),
+    ).fetchone()
+    assert conv is not None
+    assert conv["message_count"] == 2
+    assert conv["model_primary"] == "openai/gpt-5-mini"
+    roles = [
+        r[0]
+        for r in conn.execute(
+            "SELECT role FROM messages WHERE conv_id = ? ORDER BY idx", (conv["id"],)
+        ).fetchall()
+    ]
+    assert roles == ["user", "assistant"]
+
+
+def test_openclaw_adapter_ingest_is_idempotent(conn):
+    path = FIXTURES / "openclaw" / "session1.jsonl"
+    ingest.ingest_path(conn, path)
+    first_counts = _counts(conn)
+
+    summary2 = ingest.ingest_path(conn, path)
+    assert summary2.totals == {"inserted": 0, "noop": 0, "superseded": 0, "flagged": 0}
+    assert summary2.files[0].status == "skipped_dup"
+    assert _counts(conn) == first_counts
+
+
+def test_hermes_adapter_parses_bare_conversation_dump(conn):
+    """hermes_conversation_*.json is a single pretty-printed JSON object, not
+    JSONL — generic_jsonl.parse() reads it line-by-line, every line fails to
+    parse standalone, and it silently yields zero conversations (total data
+    loss, not a role/model/timestamp mismapping)."""
+    path = FIXTURES / "hermes" / "hermes_conversation_20260101_010101.json"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 1
+
+    conv = conn.execute("SELECT * FROM conversations").fetchone()
+    assert conv["platform"] == "hermes"
+    assert conv["native_id"] == "20260101_010101"
+    assert conv["title"] == "What is your name?"
+    assert conv["started_at"] == "2026-01-01T01:01:01.000000"
+    assert conv["ended_at"] is None  # genuinely absent from this shape, not a parsing gap
+    assert conv["message_count"] == 2
+    assert conv["model_primary"] == "models/gemini-3.1-flash-lite-preview"
+
+    roles = [
+        r[0]
+        for r in conn.execute(
+            "SELECT role FROM messages WHERE conv_id = ? ORDER BY idx", (conv["id"],)
+        ).fetchall()
+    ]
+    assert roles == ["user", "assistant"]
+
+
+def test_hermes_adapter_parses_session_envelope_shape(conn):
+    path = FIXTURES / "hermes" / "session_20260101_020202_abc123.json"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 1
+
+    conv = conn.execute("SELECT * FROM conversations").fetchone()
+    assert conv["native_id"] == "20260101_020202_abc123"
+    assert conv["project"] == "cli"
+    assert conv["started_at"] == "2026-01-01T02:02:02.000000"
+    assert conv["ended_at"] == "2026-01-01T02:02:30.000000"
+    assert conv["model_primary"] == "gemini-2.5-pro"
+
+
+def test_hermes_adapter_parses_jsonl_transcript_with_tool_calls(conn):
+    path = FIXTURES / "hermes" / "20260101_030303_def456.jsonl"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 1
+
+    conv = conn.execute("SELECT * FROM conversations").fetchone()
+    assert conv["native_id"] == "20260101_030303_def456"
+    assert conv["message_count"] == 5
+    assert conv["model_primary"] == "gemini-3-flash-preview"
+
+    rows = conn.execute(
+        "SELECT role, model FROM messages WHERE conv_id = ? ORDER BY idx", (conv["id"],)
+    ).fetchall()
+    assert [r["role"] for r in rows] == ["system", "user", "assistant", "tool", "assistant"]
+    assert rows[0]["model"] is None  # session_meta
+    assert rows[2]["model"] == "gemini-3-flash-preview"  # assistant carries session model
+    assert rows[3]["model"] is None  # tool result
+
+    blocks = conn.execute(
+        "SELECT m.idx, b.type, b.tool_name, b.text FROM blocks b JOIN messages m ON m.id = b.msg_id "
+        "WHERE b.conv_id = ? ORDER BY m.idx, b.idx",
+        (conv["id"],),
+    ).fetchall()
+    assistant_call_blocks = [b for b in blocks if b["idx"] == 2]
+    assert [b["type"] for b in assistant_call_blocks] == ["text", "tool_use"]
+    assert assistant_call_blocks[1]["tool_name"] == "execute_code"
+    tool_result_block = next(b for b in blocks if b["idx"] == 3)
+    assert tool_result_block["type"] == "tool_result"
+    assert tool_result_block["text"] == "4"
+
+
+def test_hermes_adapter_ingest_is_idempotent(conn):
+    dir_path = FIXTURES / "hermes"
+    ingest.ingest_path(conn, dir_path)
+    first_counts = _counts(conn)
+
+    summary2 = ingest.ingest_path(conn, dir_path)
+    assert summary2.totals == {"inserted": 0, "noop": 0, "superseded": 0, "flagged": 0}
+    assert all(f.status == "skipped_dup" for f in summary2.files)
+    assert _counts(conn) == first_counts

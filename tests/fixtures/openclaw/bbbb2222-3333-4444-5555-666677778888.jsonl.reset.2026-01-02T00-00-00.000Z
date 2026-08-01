@@ -1,0 +1,4 @@
+{"type":"session","version":3,"id":"bbbb2222-3333-4444-5555-666677778888","timestamp":"2026-01-02T00:00:00.000Z","cwd":"/Users/testuser/.openclaw/workspace-other"}
+{"type":"model_change","id":"ev101","parentId":null,"timestamp":"2026-01-02T00:00:01.000Z","provider":"openai","modelId":"gpt-5-mini"}
+{"type":"message","id":"ev102","parentId":"ev101","timestamp":"2026-01-02T00:00:02.000Z","message":{"role":"user","content":[{"type":"text","text":"Ping"}]}}
+{"type":"message","id":"ev103","parentId":"ev102","timestamp":"2026-01-02T00:00:03.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Pong"}]}}

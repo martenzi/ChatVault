@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -9,6 +10,19 @@ from chatvault import adapters, hashing, loader
 from chatvault.config import Config
 
 KNOWN_EXTENSIONS = {".json", ".jsonl"}
+
+# Some sources write archived/backup copies with a compound extension —
+# OpenClaw's pre-reset session backups are named "<uuid>.jsonl.reset" or
+# "<uuid>.jsonl.reset.<ISO8601Z timestamp>". Path.suffix on those returns
+# ".reset"/".<fragment>Z", not ".jsonl", so the strict KNOWN_EXTENSIONS check
+# above would silently drop real session content. Recognise them by glob-ish
+# pattern on the filename instead of requiring the source folder to rename
+# anything (which raw/ append-only + "never modify source" both rule out).
+_KNOWN_NAME_RE = re.compile(r"\.(json|jsonl)(\.|$)", re.IGNORECASE)
+
+
+def _is_known_candidate_name(name: str) -> bool:
+    return bool(_KNOWN_NAME_RE.search(name))
 
 
 @dataclass
@@ -55,7 +69,7 @@ def _iter_candidate_files(path: Path, exclude_dir: Path | None = None) -> list[P
     return sorted(
         p
         for p in path.rglob("*")
-        if p.is_file() and p.suffix.lower() in KNOWN_EXTENSIONS and not _is_excluded(p)
+        if p.is_file() and _is_known_candidate_name(p.name) and not _is_excluded(p)
     )
 
 

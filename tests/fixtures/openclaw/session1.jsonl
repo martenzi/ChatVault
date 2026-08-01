@@ -1,0 +1,10 @@
+{"type":"session","version":3,"id":"aaaa1111-2222-3333-4444-555566667777","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/Users/testuser/.openclaw/workspace"}
+{"type":"model_change","id":"ev001","parentId":null,"timestamp":"2026-01-01T00:00:01.000Z","provider":"anthropic","modelId":"claude-haiku-4-5"}
+{"type":"thinking_level_change","id":"ev002","parentId":"ev001","timestamp":"2026-01-01T00:00:01.100Z","thinkingLevel":"off"}
+{"type":"message","id":"ev003","parentId":"ev002","timestamp":"2026-01-01T00:00:02.000Z","message":{"role":"user","content":[{"type":"text","text":"Can you check the deployment status?"}]}}
+{"type":"message","id":"ev004","parentId":"ev003","timestamp":"2026-01-01T00:00:03.000Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_1","name":"session_status","arguments":{}}]}}
+{"type":"message","id":"ev005","parentId":"ev004","timestamp":"2026-01-01T00:00:03.500Z","message":{"role":"toolResult","toolCallId":"call_1","toolName":"session_status","content":[{"type":"text","text":"All systems nominal."}],"isError":false}}
+{"type":"custom","customType":"model-snapshot","data":{"timestamp":1767225604000,"provider":"google-vertex","modelApi":"google-vertex","modelId":"gemini-3-flash-preview"},"id":"ev006","parentId":"ev005","timestamp":"2026-01-01T00:00:04.000Z"}
+{"type":"message","id":"ev007","parentId":"ev006","timestamp":"2026-01-01T00:00:05.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Deployment status: all systems nominal."}]}}
+{"type":"compaction","id":"ev008","parentId":"ev007","timestamp":"2026-01-01T00:00:06.000Z","summary":"## Decisions\n- Checked deployment status: nominal."}
+{"type":"message","id":"ev009","parentId":"ev008","timestamp":"2026-01-01T00:00:07.000Z","message":{"role":"developer","content":[{"type":"reasoning_trace","payload":"scratch notes"}]}}

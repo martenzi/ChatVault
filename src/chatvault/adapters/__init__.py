@@ -19,6 +19,8 @@ def register_late_adapters() -> None:
         cursor_legacy,
         cursor_legacy_copilot,
         generic_jsonl,
+        hermes,
+        openclaw,
         vscode_legacy,
         windsurf_legacy,
     )
@@ -33,6 +35,8 @@ def register_late_adapters() -> None:
     _REGISTRY.setdefault("cursor_legacy", cursor_legacy)
     _REGISTRY.setdefault("vscode_legacy", vscode_legacy)
     _REGISTRY.setdefault("cursor_legacy_copilot", cursor_legacy_copilot)
+    _REGISTRY.setdefault("openclaw", openclaw)
+    _REGISTRY.setdefault("hermes", hermes)
     # Deliberately last: permissive fallback, must not shadow specific adapters.
     _REGISTRY.setdefault("generic_jsonl", generic_jsonl)
 
