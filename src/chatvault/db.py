@@ -61,6 +61,7 @@ def migrate(config: Config) -> list[str]:
 
         if applied:
             _backfill_note_hashes(conn)
+            _backfill_first_seen_at(conn)
 
         return applied
     finally:
@@ -84,4 +85,18 @@ def _backfill_note_hashes(conn: sqlite3.Connection) -> None:
             (hashing.note_hash(row["note"]), row["id"]),
         )
     if rows:
+        conn.commit()
+
+
+def _backfill_first_seen_at(conn: sqlite3.Connection) -> None:
+    """Migration 003 adds source_files.first_seen_at with no way to populate it
+    from historical data other than treating the original ingested_at as the
+    best available proxy. No-op once every row has a value."""
+    try:
+        cur = conn.execute(
+            "UPDATE source_files SET first_seen_at = ingested_at WHERE first_seen_at IS NULL"
+        )
+    except sqlite3.OperationalError:
+        return  # source_files.first_seen_at doesn't exist yet (shouldn't happen post-migrate, defensive only)
+    if cur.rowcount:
         conn.commit()

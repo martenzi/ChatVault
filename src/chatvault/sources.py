@@ -78,7 +78,9 @@ def mark_kind(conn: sqlite3.Connection, path_or_root: str, kind: str) -> int:
 
 def list_sources(conn: sqlite3.Connection, kind: str | None = None) -> list[sqlite3.Row]:
     sql = """
-        SELECT root_dir, kind, COUNT(*) AS files, MAX(last_seen_at) AS last_seen_at
+        SELECT root_dir, kind, COUNT(*) AS files, MAX(last_seen_at) AS last_seen_at,
+               SUM(CASE WHEN presence = 'missing' THEN 1 ELSE 0 END) AS missing,
+               SUM(CASE WHEN presence = 'retired' THEN 1 ELSE 0 END) AS retired
         FROM source_files
         {where}
         GROUP BY root_dir, kind
@@ -205,6 +207,36 @@ def export_manifest(conn: sqlite3.Connection, config: Config, out: Path | None =
 
     for subdir in undocumented_subdirs(config.root / "raw_exclusions", why_entries):
         lines.append(f"| {subdir.name} | ⚠ undocumented |")
+
+    lines += [
+        "",
+        "## Missing — tracked but not found on disk",
+        "| Path | Root | Missing since |",
+        "|---|---|---|",
+    ]
+    missing = conn.execute(
+        "SELECT path, root_dir, missing_since FROM source_files WHERE presence = 'missing' ORDER BY missing_since"
+    ).fetchall()
+    if not missing:
+        lines.append("<!-- none — every tracked live source is accounted for -->")
+    else:
+        for r in missing:
+            lines.append(f"| {r['path']} | {r['root_dir'] or '?'} | {r['missing_since'] or '?'} |")
+
+    lines += [
+        "",
+        "## Retired — deliberately archived, expected absence",
+        "| Path | Root | Reason |",
+        "|---|---|---|",
+    ]
+    retired = conn.execute(
+        "SELECT path, root_dir, presence_note FROM source_files WHERE presence = 'retired' ORDER BY root_dir, path"
+    ).fetchall()
+    if not retired:
+        lines.append("<!-- none -->")
+    else:
+        for r in retired:
+            lines.append(f"| {r['path']} | {r['root_dir'] or '?'} | {r['presence_note'] or ''} |")
 
     out.write_text("\n".join(lines) + "\n")
     return out

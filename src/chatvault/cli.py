@@ -17,6 +17,7 @@ from chatvault import export as export_mod
 from chatvault import graph as graph_mod
 from chatvault import ingest as ingest_mod
 from chatvault import inventory as inventory_mod
+from chatvault import reconcile as reconcile_mod
 from chatvault import search as search_mod
 from chatvault import sources as sources_mod
 from chatvault import verify as verify_mod
@@ -244,6 +245,63 @@ def ingest(
     )
     if totals["flagged"]:
         console.print("[yellow]Some conversations were flagged as ambiguous duplicates — see `chatvault dedupe --report`.[/yellow]")
+
+
+@app.command()
+def reconcile(
+    root: list[str] = typer.Option(None, "--root", help="Limit to specific tracked root_dir(s). Default: all tracked roots in scope."),
+    kind: str = typer.Option("live", "--kind", help="live | frozen | all. Default 'live' — frozen sources are archived on purpose."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report without writing presence changes."),
+    json_out: bool = typer.Option(False, "--json"),
+    retire: str = typer.Option(None, "--retire", help="Mark a root_dir or path as deliberately gone; requires --reason."),
+    reason: str = typer.Option(None, "--reason", help="With --retire, why this source is expected to be absent."),
+    status: bool = typer.Option(False, "--status", help="Show presence counts and the last reconcile run, without scanning disk."),
+) -> None:
+    """Diff DB-tracked source_files against what's actually on disk. Detects
+    deletions that `ingest` (a push, disk -> DB) can never observe on its own."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        if retire:
+            if not reason:
+                console.print("[red]--retire requires --reason[/red]")
+                raise typer.Exit(code=1)
+            n = reconcile_mod.retire(conn, retire, reason)
+            console.print(f"retired {n} source_files row(s): {reason}")
+            return
+
+        if status:
+            data = reconcile_mod.status(conn)
+            console.print(f"presence counts: {data['counts'] or {}}")
+            if data["last_run"]:
+                lr = data["last_run"]
+                console.print(
+                    f"last run: {lr['run_at']} checked={lr['checked']} "
+                    f"still_present={lr['still_present']} newly_missing={lr['newly_missing']} reappeared={lr['reappeared']}"
+                )
+            else:
+                console.print("[dim]no reconcile runs yet[/dim]")
+            return
+
+        report = reconcile_mod.reconcile(conn, roots=root or None, kind=kind, dry_run=dry_run)
+    finally:
+        conn.close()
+
+    if json_out:
+        print(json.dumps(reconcile_mod.to_dict(report), indent=2))
+        return
+
+    console.print(f"roots checked: {len(report.roots)}")
+    console.print(
+        f"files checked={report.checked} still_present={report.still_present} "
+        f"newly_missing={report.newly_missing} reappeared={report.reappeared}"
+    )
+    if report.missing:
+        console.print("[yellow]missing:[/yellow]")
+        for m in report.missing[:20]:
+            console.print(f"  {m['path']}")
+        if len(report.missing) > 20:
+            console.print(f"  ... and {len(report.missing) - 20} more")
 
 
 @app.command()
@@ -753,8 +811,15 @@ def sources_list(kind: str = typer.Option(None, "--kind", help="live | frozen"))
     table.add_column("kind")
     table.add_column("files", justify="right")
     table.add_column("last_seen_at")
+    table.add_column("missing", justify="right")
+    table.add_column("retired", justify="right")
     for r in rows:
-        table.add_row(r["root_dir"] or "-", r["kind"], str(r["files"]), r["last_seen_at"] or "-")
+        missing = r["missing"] or 0
+        table.add_row(
+            r["root_dir"] or "-", r["kind"], str(r["files"]), r["last_seen_at"] or "-",
+            f"[yellow]{missing}[/yellow]" if missing else "0",
+            str(r["retired"] or 0),
+        )
     console.print(table)
 
 

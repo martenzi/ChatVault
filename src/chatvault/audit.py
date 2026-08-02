@@ -62,6 +62,20 @@ def _check_ingest_completeness(conn: sqlite3.Connection, config: Config, raw_dir
             data={"paths": [str(p) for p in unclaimed_paths]},
         )
     )
+
+    missing_rows = conn.execute(
+        "SELECT path, missing_since FROM source_files WHERE presence = 'missing' ORDER BY missing_since"
+    ).fetchall()
+    results.append(
+        CheckResult(
+            "A", "no missing tracked files",
+            "pass" if not missing_rows else "warn",
+            f"{len(missing_rows)} file(s) tracked but not found on disk (run `chatvault reconcile`)"
+            + (": " + ", ".join(f"{r['path']} (missing since {r['missing_since']})" for r in missing_rows[:5])
+               + (" ..." if len(missing_rows) > 5 else "") if missing_rows else ""),
+            data={"missing": [{"path": r["path"], "missing_since": r["missing_since"]} for r in missing_rows]},
+        )
+    )
     return results
 
 

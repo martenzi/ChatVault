@@ -137,13 +137,14 @@ def ingest_path(
         except Exception as exc:  # noqa: BLE001
             conn.execute(
                 """
-                INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, error, kind, last_seen_at, root_dir)
-                VALUES (?, ?, ?, ?, ?, ?, 'failed', ?, 'frozen', ?, ?)
+                INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, error, kind, last_seen_at, root_dir, first_seen_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'failed', ?, 'frozen', ?, ?, ?)
                 ON CONFLICT(sha256) DO UPDATE SET
                     status='failed', error=excluded.error, ingested_at=excluded.ingested_at,
-                    last_seen_at=excluded.last_seen_at, root_dir=excluded.root_dir
+                    last_seen_at=excluded.last_seen_at, root_dir=excluded.root_dir,
+                    first_seen_at=COALESCE(source_files.first_seen_at, excluded.first_seen_at)
                 """,
-                (str(file_path), sha, mod.platform, mod.name, file_path.stat().st_size, now, str(exc), now, root_dir),
+                (str(file_path), sha, mod.platform, mod.name, file_path.stat().st_size, now, str(exc), now, root_dir, now),
             )
             conn.commit()
             summary.files.append(FileIngestResult(file_path, "failed", adapter=mod.name, error=str(exc)))
@@ -151,13 +152,14 @@ def ingest_path(
 
         cur = conn.execute(
             """
-            INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, kind, last_seen_at, root_dir)
-            VALUES (?, ?, ?, ?, ?, ?, 'ok', 'frozen', ?, ?)
+            INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, kind, last_seen_at, root_dir, first_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'ok', 'frozen', ?, ?, ?)
             ON CONFLICT(sha256) DO UPDATE SET
                 status='ok', error=NULL, ingested_at=excluded.ingested_at,
-                last_seen_at=excluded.last_seen_at, root_dir=excluded.root_dir
+                last_seen_at=excluded.last_seen_at, root_dir=excluded.root_dir,
+                first_seen_at=COALESCE(source_files.first_seen_at, excluded.first_seen_at)
             """,
-            (str(file_path), sha, mod.platform, mod.name, file_path.stat().st_size, now, now, root_dir),
+            (str(file_path), sha, mod.platform, mod.name, file_path.stat().st_size, now, now, root_dir, now),
         )
         source_file_id = cur.lastrowid or conn.execute(
             "SELECT id FROM source_files WHERE sha256 = ?", (sha,)
@@ -181,5 +183,16 @@ def ingest_path(
         from chatvault import dedupe
 
         dedupe.scan_candidates(conn)
+
+        # Self-maintaining presence tracking: if this root has ever been
+        # marked 'live', a fresh ingest is also the natural moment to notice
+        # that some previously-tracked file has disappeared (or reappeared).
+        is_live = conn.execute(
+            "SELECT 1 FROM source_files WHERE root_dir = ? AND kind = 'live' LIMIT 1", (root_dir,)
+        ).fetchone()
+        if is_live:
+            from chatvault import reconcile as reconcile_mod
+
+            reconcile_mod.reconcile(conn, roots=[root_dir], kind="live")
 
     return summary
