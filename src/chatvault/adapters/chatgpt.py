@@ -13,6 +13,7 @@ platform = "chatgpt"
 name = "chatgpt"
 
 _HIDDEN_METADATA_KEYS = ("is_visually_hidden_from_conversation",)
+_AUDIO_ATTACHMENT_TYPES = {"audio_asset_pointer", "real_time_user_audio_video_asset_pointer"}
 
 
 def sniff(path: Path) -> bool:
@@ -61,6 +62,12 @@ def _blocks_from_message_content(content: dict) -> list[dict]:
                 blocks.append(make_block(idx, "text", p, raw={"text": p}))
             elif isinstance(p, dict) and p.get("content_type") == "image_asset_pointer":
                 blocks.append(make_block(idx, "image", "", raw=p))
+            elif isinstance(p, dict) and p.get("content_type") == "audio_transcription":
+                blocks.append(make_block(idx, "text", p.get("text", ""), raw=p))
+            elif isinstance(p, dict) and (
+                p.get("content_type") in _AUDIO_ATTACHMENT_TYPES or "audio_asset_pointer" in p
+            ):
+                blocks.append(make_block(idx, "attachment", "", raw=p))
             elif isinstance(p, dict):
                 blocks.append(make_block(idx, "unknown", "", raw=p))
         return blocks
@@ -73,6 +80,12 @@ def _blocks_from_message_content(content: dict) -> list[dict]:
                 texts.append(t.get("content") or t.get("summary") or "")
         text = "\n\n".join(t for t in texts if t)
         return [make_block(0, "thinking", text, raw=content)]
+
+    if ct == "reasoning_recap":
+        # e.g. {"content": "Thought for 12s", "content_type": "reasoning_recap"} -- a UI
+        # summary of hidden reasoning time, not the reasoning itself. Real text, low value.
+        text = content.get("content") or ""
+        return [make_block(0, "thinking", text, raw=content)] if text else []
 
     return [make_block(0, "unknown", "", raw=content)]
 

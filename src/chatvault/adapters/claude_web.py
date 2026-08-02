@@ -62,6 +62,26 @@ def _blocks_from_content(content, fallback_text: str) -> list[dict]:
     return blocks
 
 
+def _attachment_blocks(cm: dict, start_idx: int) -> list[dict]:
+    blocks: list[dict] = []
+    seen_names: set[str] = set()
+    for att in cm.get("attachments") or []:
+        if not isinstance(att, dict):
+            continue
+        seen_names.add(att.get("file_name"))
+        text = att.get("extracted_content") or ""
+        blocks.append(make_block(start_idx + len(blocks), "attachment", text, raw=att))
+    for f in cm.get("files") or []:
+        if not isinstance(f, dict):
+            continue
+        # "files" duplicates "attachments" by file_name when the latter has extracted
+        # text; only add it when it's the only record of that file.
+        if f.get("file_name") in seen_names:
+            continue
+        blocks.append(make_block(start_idx + len(blocks), "attachment", "", raw=f))
+    return blocks
+
+
 def parse(path: Path) -> Iterator[dict]:
     data = orjson.loads(path.read_bytes())
     conversations = data if isinstance(data, list) else [data]
@@ -74,6 +94,7 @@ def parse(path: Path) -> Iterator[dict]:
         for idx, cm in enumerate(chat_messages):
             role = _SENDER_TO_ROLE.get(cm.get("sender"), cm.get("sender") or "unknown")
             blocks = _blocks_from_content(cm.get("content"), cm.get("text", ""))
+            blocks += _attachment_blocks(cm, len(blocks))
             messages.append(make_message(idx, role, None, cm.get("created_at"), blocks, raw=cm))
 
         yield make_conversation(
