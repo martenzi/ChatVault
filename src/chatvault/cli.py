@@ -21,6 +21,7 @@ from chatvault import export as export_mod
 from chatvault import graph as graph_mod
 from chatvault import ingest as ingest_mod
 from chatvault import inventory as inventory_mod
+from chatvault import portfolio as portfolio_mod
 from chatvault import projects as projects_mod
 from chatvault import reconcile as reconcile_mod
 from chatvault import search as search_mod
@@ -645,19 +646,25 @@ def tag_list() -> None:
 
 @tag_app.command("untag")
 def tag_untag(
-    name: str = typer.Argument(...),
+    name: str = typer.Argument(None, help="Tag name. Omit when using --source alone to undo an entire bulk operation across every tag name it wrote."),
     where: str = typer.Option(None, "--where", help="SQL predicate over the target view."),
     target: str = typer.Option("conversation", "--target", help="conversation | message | block"),
-    source: str = typer.Option(None, "--source", help="Only remove links applied by this source, e.g. 'folder_import' or 'rule' — the bulk-reversibility path."),
+    source: str = typer.Option(None, "--source", help="Only remove links applied by this source, e.g. 'folder_import', 'rule', or 'llm' — the bulk-reversibility path. Combine with a tag name to narrow, or use alone to undo every tag that source ever wrote."),
 ) -> None:
-    """Remove a tag from matching rows. Pairs with `tag add`/`import-from-folders`/`rule` for reversibility — narrow with --source to undo exactly one bulk operation."""
+    """Remove a tag (or, with --source alone, every tag from that source
+    regardless of name) from matching rows. Pairs with `tag add`/
+    `import-from-folders`/`rule`/`portfolio-analyze` for reversibility."""
+    if name is None and source is None:
+        console.print("[red]pass a tag name, --source, or both[/red]")
+        raise typer.Exit(code=1)
     config = load_config()
     conn = connect(config)
     try:
-        n = tags_mod.untag(conn, name, where=where, target=target, source=source)
+        n = tags_mod.untag(conn, name=name, where=where, target=target, source=source)
     finally:
         conn.close()
-    console.print(f"removed '{name}' from {n} {target}(s)")
+    label = f"'{name}'" if name else f"source='{source}'"
+    console.print(f"removed {label} from {n} {target}(s)")
 
 
 @tag_app.command("import-from-folders")
@@ -1585,6 +1592,58 @@ def embed(
             "Run `ollama serve` (and `ollama pull nomic-embed-text` if needed), then re-run `chatvault embed`.[/red]"
         )
         raise typer.Exit(code=1)
+
+
+@app.command("portfolio-analyze")
+def portfolio_analyze(
+    where: str = typer.Option(None, "--where", help="SQL predicate over v_conversations — analyze a subset instead of everything."),
+    pick: str = typer.Option(None, "--pick", help="Row number(s) from the last `find` — analyze just those."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Compute and report without writing any tags."),
+    report: Path = typer.Option(None, "--report", help="Also write a human-readable markdown summary to this path."),
+    source: str = typer.Option("llm", "--source", help="tag_links.source for everything this writes. Keep it 'llm' unless you have a specific reason not to — `tag untag --source <this>` is how the whole run gets undone in one shot."),
+) -> None:
+    """Port of technical_portfolio_extractor.py + reasoning_profile_analyzer.py
+    (Build Order Step 8) — tags conversations by technical classification,
+    LLM-testing evidence, two independent reasoning-pattern sets, and skill
+    validation. Same keyword scoring as the originals, unchanged; input is
+    the database instead of a directory of markdown files, output is tags
+    instead of a JSON snapshot. Conversation-level only, by design — a
+    keyword-matching heuristic shouldn't claim more precision than that.
+
+    Every tag lands with --source (default 'llm'), so the entire run is
+    reversible in one command regardless of how many distinct tag names it
+    touched: `chatvault tag untag --source llm`."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        conv_ids = None
+        if pick is not None:
+            try:
+                conv_ids = browse_mod.resolve_pick(conn, config, pick)
+            except (browse_mod.StaleCacheError, ValueError) as exc:
+                console.print(f"[red]{exc}[/red]")
+                raise typer.Exit(code=1)
+        elif where is not None:
+            conv_ids = [r[0] for r in conn.execute(f"SELECT id FROM v_conversations WHERE {where}").fetchall()]  # noqa: S608
+
+        result = portfolio_mod.run(conn, conv_ids=conv_ids, dry_run=dry_run, source=source)
+
+        if report:
+            report.write_text(portfolio_mod.render_report(result))
+    finally:
+        conn.close()
+
+    console.print(f"scanned {result.conversations_scanned} conversation(s) — {result.technical_conversations} technical")
+    console.print(
+        f"{'would apply' if dry_run else 'applied'} {result.tag_links_written} tag application(s) "
+        f"across {len(result.tag_conv_ids)} distinct tag name(s)"
+    )
+    if dry_run:
+        console.print("[dim]--dry-run: nothing was written[/dim]")
+    else:
+        console.print(f"[dim]undo the whole run: chatvault tag untag --source {source}[/dim]")
+    if report:
+        console.print(f"wrote {report}")
 
 
 if __name__ == "__main__":

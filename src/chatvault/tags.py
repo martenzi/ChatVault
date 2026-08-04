@@ -108,18 +108,35 @@ def tag_add(conn: sqlite3.Connection, name: str, where: str, target: str = "conv
     return len(ids)
 
 
-def untag(conn: sqlite3.Connection, name: str, where: str | None = None, target: str = "conversation", source: str | None = None) -> int:
+def untag(
+    conn: sqlite3.Connection,
+    name: str | None = None,
+    where: str | None = None,
+    target: str = "conversation",
+    source: str | None = None,
+) -> int:
     """Bulk-reversible companion to tag_add: removes tag_links for `name`,
     optionally narrowed by `source` (e.g. 'folder_import' or 'rule' to undo
-    exactly one bulk operation) and/or `where` over the target view."""
-    view = _TARGET_VIEW[target]
-    row = conn.execute("SELECT id FROM tags WHERE name = ?", (name,)).fetchone()
-    if row is None:
-        return 0
-    tag_id = row[0]
+    exactly one bulk operation) and/or `where` over the target view.
 
-    clauses = ["tag_id = ?", "target_type = ?"]
-    params: list = [tag_id, target]
+    `name` is optional when `source` is given: `untag(source='llm')` removes
+    every tag_link that source ever wrote, regardless of tag name — the
+    full-undo path for an automated tagging pass (e.g. portfolio analysis)
+    that spreads across many distinct tag names. At least one of name/source
+    must be given, so this can never silently mean "delete everything"."""
+    if name is None and source is None:
+        raise ValueError("pass a tag name, --source, or both")
+
+    view = _TARGET_VIEW[target]
+    clauses = ["target_type = ?"]
+    params: list = [target]
+
+    if name is not None:
+        row = conn.execute("SELECT id FROM tags WHERE name = ?", (name,)).fetchone()
+        if row is None:
+            return 0
+        clauses.append("tag_id = ?")
+        params.append(row[0])
     if source is not None:
         clauses.append("source = ?")
         params.append(source)
