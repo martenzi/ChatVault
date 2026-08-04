@@ -97,11 +97,11 @@ class TaggingScreenApp(App):
     def compose(self) -> ComposeResult:
         yield Header()
         with Vertical(id="filters"):
-            yield Input(placeholder="search (plain-text FTS) — press Enter", id="search")
+            yield Input(placeholder="search (plain-text FTS, or check ⚡ semantic) — press Enter", id="search")
             with Horizontal():
                 yield Input(placeholder="platform (blank = any)", id="platform")
                 yield Checkbox("untagged only", id="untagged_only")
-                yield Checkbox("⚡ semantic (coming soon)", id="semantic", disabled=True)
+                yield Checkbox("⚡ semantic", id="semantic")
         with Horizontal(id="main"):
             yield SelectionList(id="results")
             yield Tree("tags", id="tags")
@@ -145,8 +145,9 @@ class TaggingScreenApp(App):
 
     def update_status(self) -> None:
         status = self.query_one("#status", Static)
+        mode = "⚡ semantic — ranked by meaning" if (self.state.semantic and self.state.query) else "showing"
         status.update(
-            f"{len(self.state.selected)} selected  ·  showing {len(self.state.results)} of {self.state.total_matches} matches"
+            f"{len(self.state.selected)} selected  ·  {mode} {len(self.state.results)} of {self.state.total_matches} matches"
         )
         recent = self.query_one("#recent", Static)
         recent.update(
@@ -165,6 +166,8 @@ class TaggingScreenApp(App):
     def _on_search_submitted(self, event: Input.Submitted) -> None:
         self.state.search(query=event.value or None)
         self.refresh_results()
+        if self.state.semantic_error:
+            self.notify(self.state.semantic_error, severity="error", timeout=8)
 
     @on(Input.Submitted, "#platform")
     def _on_platform_submitted(self, event: Input.Submitted) -> None:
@@ -175,6 +178,13 @@ class TaggingScreenApp(App):
     def _on_untagged_toggled(self, event: Checkbox.Changed) -> None:
         self.state.search(untagged_only=event.value)
         self.refresh_results()
+
+    @on(Checkbox.Changed, "#semantic")
+    def _on_semantic_toggled(self, event: Checkbox.Changed) -> None:
+        self.state.search(semantic=event.value)
+        self.refresh_results()
+        if self.state.semantic_error:
+            self.notify(self.state.semantic_error, severity="error", timeout=8)
 
 
     @on(Tree.NodeHighlighted, "#tags")

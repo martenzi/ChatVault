@@ -188,17 +188,44 @@ def test_read_pane_opens_and_escape_returns_with_selection_intact(conn):
     asyncio.run(body())
 
 
-def test_semantic_toggle_is_disabled_not_silently_faked(conn):
-    from textual.widgets import Checkbox
+def test_semantic_toggle_is_enabled_and_wired(conn, monkeypatch):
+    """The checkbox used to be a disabled 'coming soon' placeholder; now that
+    semantic search is built, it must be a real, enabled control that
+    actually switches the query mode — not silently still doing keyword
+    search under a semantic-looking label. Mocks the embedding call itself
+    (no real Ollama dependency in a unit test) but drives the toggle through
+    the real widget event, same as everything else in this file."""
+    from textual.widgets import Checkbox, Input
+
+    _load(conn, "s1", "conv one", "2026-01-01T00:00:00")
+    calls = []
+
+    def fake_semantic_search(conn_, query, limit=20, model=None):
+        calls.append(query)
+        return list(conn_.execute("SELECT * FROM v_conversations LIMIT 1"))
+
+    monkeypatch.setattr("chatvault.screen_state.embeddings.semantic_search", fake_semantic_search)
 
     async def body():
         app = TaggingScreenApp(conn)
         async with app.run_test() as pilot:
             await pilot.pause()
             sem = app.query_one("#semantic", Checkbox)
-            assert sem.disabled is True
+            assert sem.disabled is False
+
+            sem.toggle()
+            await pilot.pause()
+            assert app.state.semantic is True
+
+            search = app.query_one("#search", Input)
+            search.focus()
+            await pilot.pause()
+            search.value = "some query"
+            await pilot.press("enter")
+            await pilot.pause()
 
     asyncio.run(body())
+    assert calls == ["some query"]
 
 
 def test_untagged_only_filter_updates_results(conn):

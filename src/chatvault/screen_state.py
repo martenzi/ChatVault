@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass, field
 
-from chatvault import browse, tags as tags_mod
+from chatvault import browse, embeddings, tags as tags_mod
 
 RECENT_LIMIT = 8
 
@@ -38,6 +38,8 @@ class ScreenState:
         self.untagged_only: bool = False
         self.since: str | None = None
         self.before: str | None = None
+        self.semantic: bool = False
+        self.semantic_error: str | None = None
 
     # ─────────────── search / filters ───────────────
 
@@ -48,11 +50,21 @@ class ScreenState:
         untagged_only: bool | None = None,
         since: str | None = None,
         before: str | None = None,
+        semantic: bool | None = None,
         limit: int = 200,
     ) -> list[sqlite3.Row]:
         """Re-runs the query with any given filters updated (omitted args
         keep their current value — the filter bar is stateful, not a
-        one-shot). Multi-select survives this: `selected` is untouched."""
+        one-shot). Multi-select survives this: `selected` is untouched.
+
+        `semantic=True` with a non-empty query ranks by meaning (embeddings)
+        instead of keyword/FTS overlap — see chatvault.embeddings. Platform/
+        date/untagged-only are applied as a local post-filter over the
+        ranked results, since the vector index itself only knows about
+        conv_id + embedding. Falls back to the normal keyword path if no
+        query is set (a semantic search needs something to embed) or if
+        Ollama isn't reachable (semantic_error is set so the UI can show
+        why, rather than silently returning keyword results unlabeled)."""
         if query is not None:
             self.query = query or None
         if platform is not None:
@@ -63,6 +75,21 @@ class ScreenState:
             self.since = since or None
         if before is not None:
             self.before = before or None
+        if semantic is not None:
+            self.semantic = semantic
+
+        self.semantic_error = None
+        if self.semantic and self.query:
+            try:
+                rows = embeddings.semantic_search(self.conn, self.query, limit=limit)
+            except embeddings.EmbeddingUnavailable as exc:
+                self.semantic_error = str(exc)
+                rows = []
+            else:
+                rows = self._apply_local_filters(rows)
+            self.results = rows
+            self.total_matches = len(rows)
+            return rows
 
         rows, total = browse.find(
             self.conn,
@@ -77,6 +104,25 @@ class ScreenState:
         self.results = rows
         self.total_matches = total
         return rows
+
+    def _apply_local_filters(self, rows: list[sqlite3.Row]) -> list[sqlite3.Row]:
+        out = []
+        for r in rows:
+            if self.platform and r["platform"] != self.platform:
+                continue
+            if self.since and (r["started_at"] or "") < self.since:
+                continue
+            if self.before and (r["started_at"] or "") >= self.before:
+                continue
+            if self.untagged_only:
+                tagged = self.conn.execute(
+                    "SELECT 1 FROM tag_links WHERE target_type = 'conversation' AND target_id = ?",
+                    (r["id"],),
+                ).fetchone()
+                if tagged:
+                    continue
+            out.append(r)
+        return out
 
     # ─────────────── selection ───────────────
 

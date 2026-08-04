@@ -84,5 +84,25 @@ def check_neo4j(config: Config) -> CheckResult:
         )
 
 
+def check_ollama() -> CheckResult:
+    from chatvault import embeddings
+
+    try:
+        embeddings.embed_text("doctor preflight check")
+        return CheckResult(
+            name="ollama / semantic search",
+            ok=True,
+            fatal=False,
+            detail=f"reachable, model {embeddings.MODEL!r} responds",
+        )
+    except embeddings.EmbeddingUnavailable as exc:
+        return CheckResult(
+            name="ollama / semantic search",
+            ok=False,
+            fatal=False,
+            detail=f"{exc} — warn only, everything else still works",
+        )
+
+
 def run_all(config: Config) -> list[CheckResult]:
-    return [check_sqlite_version(), check_fts5(), check_neo4j(config)]
+    return [check_sqlite_version(), check_fts5(), check_neo4j(config), check_ollama()]

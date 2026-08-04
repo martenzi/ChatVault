@@ -5,6 +5,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+import sqlite_vec
+
 from chatvault import hashing
 from chatvault.config import Config
 
@@ -18,6 +20,14 @@ def connect(config: Config) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.row_factory = sqlite3.Row
+    # Needed for migration 008's `conv_embeddings` vec0 virtual table and any
+    # query against it (semantic search) — loaded unconditionally, same as
+    # every other extension-backed feature (FTS5) already baked into SQLite
+    # itself. If this fails, it fails loudly here rather than as a confusing
+    # "no such module: vec0" deep inside a migration or a search call.
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
     return conn
 
 

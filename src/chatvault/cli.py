@@ -15,6 +15,7 @@ from chatvault import browse as browse_mod
 from chatvault import curation
 from chatvault import curation_io
 from chatvault import dedupe as dedupe_mod
+from chatvault import embeddings as embeddings_mod
 from chatvault import doctor as doctor_mod
 from chatvault import export as export_mod
 from chatvault import graph as graph_mod
@@ -207,6 +208,7 @@ def ingest(
     dry_run: bool = typer.Option(False, "--dry-run", help="Parse and report without writing to the database."),
     force: bool = typer.Option(False, "--force", help="Allow ingesting raw_exclusions/ directly."),
     reprocess: bool = typer.Option(False, "--reprocess", help="Bypass the file-level dedup and re-parse already-seen files. Existing conversations still resolve as noop by content_hash — this is for backfilling metadata an adapter fix now extracts (e.g. attachments) without ever duplicating rows."),
+    embed: bool = typer.Option(True, "--embed/--no-embed", help="Embed newly inserted/superseded conversations for semantic search (spec: 'incrementally on new ingests'). Best-effort — an unreachable Ollama server is reported, not fatal."),
 ) -> None:
     """Ingest RAW export file(s) into SQLite. Idempotent — safe to re-run."""
     config = load_config()
@@ -218,7 +220,7 @@ def ingest(
     conn = connect(config)
     try:
         try:
-            summary = ingest_mod.ingest_path(conn, path, adapter_name=adapter, dry_run=dry_run, force=force, config=config, reprocess=reprocess)
+            summary = ingest_mod.ingest_path(conn, path, adapter_name=adapter, dry_run=dry_run, force=force, config=config, reprocess=reprocess, embed=embed)
         except ValueError as exc:
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(code=1)
@@ -257,6 +259,14 @@ def ingest(
     )
     if totals["flagged"]:
         console.print("[yellow]Some conversations were flagged as ambiguous duplicates — see `chatvault dedupe --report`.[/yellow]")
+    if summary.embedding is not None:
+        e = summary.embedding
+        console.print(f"embedding: embedded={e.embedded} skipped={e.skipped} failed={e.failed}")
+        if e.unavailable:
+            console.print(
+                "[yellow]Ollama wasn't reachable — semantic search is stale for these conversations "
+                "until you run `chatvault embed` (or `ollama serve`) later.[/yellow]"
+            )
 
 
 @app.command()
@@ -962,14 +972,37 @@ def search(
     query: str = typer.Argument(...),
     platform: str = typer.Option(None, "--platform"),
     type: str = typer.Option(None, "--type", help="text | thinking | tool_use | tool_result | code | ..."),
+    semantic: bool = typer.Option(False, "--semantic", help="Search conversations by meaning (embeddings), not keyword overlap. Ignores --type (block-level, meaningless for a per-conversation vector search)."),
     limit: int = typer.Option(20, "--limit"),
 ) -> None:
+    """Keyword search over blocks (default) or semantic search over
+    conversations (--semantic) — finds conversations whose meaning matches
+    the query even if they share none of its actual words."""
     config = load_config()
     conn = connect(config)
     try:
-        rows = search_mod.search(conn, query, platform=platform, type_=type, limit=limit)
+        if semantic:
+            try:
+                rows = embeddings_mod.semantic_search(conn, query, limit=limit)
+            except embeddings_mod.EmbeddingUnavailable as exc:
+                console.print(f"[red]{exc}[/red]")
+                raise typer.Exit(code=1)
+        else:
+            rows = search_mod.search(conn, query, platform=platform, type_=type, limit=limit)
     finally:
         conn.close()
+
+    if semantic:
+        table = Table(title=f"semantic search: {query!r}")
+        table.add_column("date")
+        table.add_column("platform")
+        table.add_column("title")
+        for r in rows:
+            table.add_row((r["started_at"] or "")[:10] or "-", r["platform"], r["title"] or "Untitled")
+        console.print(table)
+        console.print(f"{len(rows)} result(s)")
+        return
+
     table = Table(title=f"search: {query!r}")
     table.add_column("uid")
     table.add_column("type")
@@ -1498,6 +1531,36 @@ def screen() -> None:
         screen_mod.run(conn)
     finally:
         conn.close()
+
+
+@app.command()
+def embed(
+    force: bool = typer.Option(False, "--force", help="Re-embed even conversations whose text hasn't changed."),
+    status: bool = typer.Option(False, "--status", help="Show embedded/pending counts without embedding anything."),
+) -> None:
+    """Backfill semantic-search embeddings over the corpus (spec: 'runs once
+    over the full existing corpus, then incrementally on new ingests' — this
+    is the once; ingest handles the incrementally). Safe to interrupt and
+    re-run: already-embedded, unchanged conversations are skipped."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        if status:
+            data = embeddings_mod.status(conn)
+            console.print(f"embedded: {data['embedded']}  pending: {data['pending']}  total: {data['total']}")
+            return
+
+        result = embeddings_mod.index_conversations(conn, force=force)
+    finally:
+        conn.close()
+
+    console.print(f"embedded: {result.embedded}  skipped: {result.skipped}  failed: {result.failed}")
+    if result.unavailable:
+        console.print(
+            "[red]Ollama wasn't reachable — stopped early. "
+            "Run `ollama serve` (and `ollama pull nomic-embed-text` if needed), then re-run `chatvault embed`.[/red]"
+        )
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":

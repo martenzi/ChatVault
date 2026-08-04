@@ -40,6 +40,7 @@ class FileIngestResult:
 @dataclass
 class IngestSummary:
     files: list[FileIngestResult] = field(default_factory=list)
+    embedding: object = None  # chatvault.embeddings.IndexResult | None
 
     @property
     def totals(self) -> dict[str, int]:
@@ -150,6 +151,7 @@ def ingest_path(
     force: bool = False,
     config: Config | None = None,
     reprocess: bool = False,
+    embed: bool = False,
 ) -> IngestSummary:
     exclude_dir = None
     if config is not None:
@@ -269,6 +271,15 @@ def ingest_path(
             from chatvault import tags as tags_mod
 
             tags_mod.apply_rules(conn, conv_ids=touched_conv_ids)
+
+            if embed:
+                from chatvault import embeddings as embeddings_mod
+
+                # Best-effort: an unreachable Ollama server must not fail an
+                # otherwise-successful ingest. index_conversations() already
+                # stops cleanly (IndexResult.unavailable=True) rather than
+                # raising, so no try/except is needed here — just surface it.
+                summary.embedding = embeddings_mod.index_conversations(conn, conv_ids=touched_conv_ids)
 
         # Self-maintaining presence tracking: if this root has ever been
         # marked 'live', a fresh ingest is also the natural moment to notice

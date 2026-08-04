@@ -12,11 +12,20 @@ dependencies = [
   "questionary>=2.0",
   "textual>=0.60",
   "pyyaml>=6.0",
+  "sqlite-vec>=0.1",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-cov"]
-semantic = ["sqlite-vec>=0.1", "sentence-transformers>=3"]
+# Semantic search (chatvault.embeddings) does NOT depend on sentence-
+# transformers: this machine's Python 3.14 + Intel macOS combination has no
+# installable torch or onnxruntime wheel at all (a real ecosystem gap, not a
+# preference), so embeddings are generated via a local Ollama server
+# (nomic-embed-text) over HTTP instead — no extra Python package needed
+# beyond sqlite-vec (now a hard dependency above, since db.connect() loads
+# it unconditionally for the conv_embeddings virtual table). Ollama itself
+# is a separate local binary, not something pip/uv can express as a
+# dependency — see STATUS.md's Semantic Search section for setup.
 
 [project.scripts]
 chatvault = "chatvault.cli:app"
