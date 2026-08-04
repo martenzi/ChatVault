@@ -121,6 +121,54 @@ def get_conversations_by_ids(conn: sqlite3.Connection, ids: list[int]) -> list[s
     return [by_id[i] for i in ids if i in by_id]
 
 
+# ─────────────── export --tree (v1.5 §4) ───────────────
+# Folders on demand: any tag tree becomes a real nested folder structure of
+# markdown, generated fresh each time — a view, not a new source of truth
+# (spec's own framing: "delete the folder, change the tags, regenerate").
+
+
+def get_conversations_for_tree(conn: sqlite3.Connection, tree: str) -> list[sqlite3.Row]:
+    """Every (conversation, matching tag) pair for a prefix/glob like
+    'tech/**' — one row per match, not one per conversation: a conversation
+    carrying two tags under the same tree (e.g. 'tech/macos/npm' and
+    'tech/containers/docker') is paired with each separately, so it lands in
+    both resulting subfolders when the tree is laid out on disk — the same
+    "one conversation, many places" property the whole taxonomy is built on,
+    just expressed within a single export run instead of across separate
+    ones. Each row carries an extra `matched_tag` column alongside the
+    normal conversation columns."""
+    from chatvault import tags as tags_mod  # deferred: tags.py imports slugify from this module
+
+    frag, params = tags_mod.tag_match("t.name", tree)
+    return conn.execute(
+        f"""
+        SELECT c.*, t.name AS matched_tag
+        FROM v_conversations c
+        JOIN tag_links tl ON tl.target_type = 'conversation' AND tl.target_id = c.id
+        JOIN tags t ON t.id = tl.tag_id
+        WHERE {frag}
+        ORDER BY t.name, c.started_at
+        """,  # noqa: S608
+        params,
+    ).fetchall()
+
+
+def tree_relative_dir(tree: str, matched_tag: str) -> Path:
+    """The folder a matched conversation lands in, relative to --out: the
+    portion of `matched_tag` below the tree's own root. 'tech/**' matching
+    'tech/macos/npm' -> 'macos/npm' (a conversation tagged with the bare
+    root itself, just 'tech', lands directly in --out — Path('.'))."""
+    root = tree
+    for suffix in ("/**", "/*"):
+        if tree.endswith(suffix):
+            root = tree[: -len(suffix)]
+            break
+    if matched_tag == root:
+        return Path(".")
+    rel = matched_tag[len(root):].lstrip("/")
+    return Path(rel) if rel else Path(".")
+
+
 # Spec v1.3 §4 — export profiles. `read` (renamed from the old "default"
 # template) always collapses tool calls to one line, regardless of size.
 # `lean` keeps short tool bodies but collapses anything over its budget.

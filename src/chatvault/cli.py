@@ -503,7 +503,8 @@ def export(
     where: str = typer.Option(None, "--where", help="SQL predicate over v_conversations."),
     view: str = typer.Option(None, "--view", help="Name of a saved view to export."),
     pick: str = typer.Option(None, "--pick", help="Row number(s) from the last `find`, e.g. '2' or '1,3'."),
-    profile: str = typer.Option(None, "--profile", help="read | lean | full. Defaults to 'read' whenever --pick/--blocks/--max-tool-chars is used."),
+    tree: str = typer.Option(None, "--tree", help="A tag or prefix (e.g. 'tech/**') — writes every matching conversation into a nested folder structure mirroring the tag tree, under --out. A conversation matching more than one tag in the tree appears under each."),
+    profile: str = typer.Option(None, "--profile", help="read | lean | full. Defaults to 'read' whenever --pick/--tree/--blocks/--max-tool-chars is used."),
     blocks: str = typer.Option(None, "--blocks", help="Comma-separated block types to keep, e.g. 'text,code'. Overrides the profile's block selection."),
     max_tool_chars: int = typer.Option(None, "--max-tool-chars", help="Collapse tool_use/tool_result bodies longer than this. Overrides the profile's own budget."),
     template: str = typer.Option("default", "--template", help="default | full | obsidian | digest (legacy path — ignored once --profile/--pick/--blocks is set)."),
@@ -514,6 +515,29 @@ def export(
     config = load_config()
     conn = connect(config)
     try:
+        if tree is not None:
+            tree_rows = export_mod.get_conversations_for_tree(conn, tree)
+            if not tree_rows:
+                console.print(f"[yellow]no conversations tagged under '{tree}'[/yellow]")
+                raise typer.Exit(code=0)
+
+            out_dir = out or config.exports_dir
+            effective_profile = profile or "read"
+            written = 0
+            for row in tree_rows:
+                content = export_mod.render_profile(
+                    conn, row, profile=effective_profile, blocks=blocks, max_tool_chars=max_tool_chars
+                )
+                conv = dict(row)
+                conv["uid_short"] = conv["uid"].split(":")[-1][:12]
+                target_dir = out_dir / export_mod.tree_relative_dir(tree, row["matched_tag"])
+                target_dir.mkdir(parents=True, exist_ok=True)
+                fname = export_mod.filename_for(conv, effective_profile)
+                (target_dir / fname).write_text(content)
+                written += 1
+            console.print(f"wrote {written} file(s) under {out_dir} (tag tree '{tree}')")
+            return
+
         use_profile = pick is not None or profile is not None or blocks is not None or max_tool_chars is not None
 
         if uid is None and where is None and view is None and pick is None:
