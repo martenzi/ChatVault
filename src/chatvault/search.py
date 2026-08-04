@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 
+from chatvault import tags as tags_mod
+
 
 def search(
     conn: sqlite3.Connection,
@@ -35,12 +37,23 @@ _STATS_GROUP_COLUMN = {
     "project": "COALESCE(c.project, 'none')",
     "month": "substr(c.started_at, 1, 7)",
     "tool": "COALESCE(b.tool_name, 'none')",
+    "tag": None,  # special-cased below — grouped by tag name, not a plain column
 }
 
 
-def stats(conn: sqlite3.Connection, by: str) -> list[sqlite3.Row]:
+def stats(conn: sqlite3.Connection, by: str, prefix: str | None = None) -> list[sqlite3.Row]:
     if by not in _STATS_GROUP_COLUMN:
         raise ValueError(f"by must be one of {list(_STATS_GROUP_COLUMN)}, got {by!r}")
+
+    if by == "tag":
+        where_frag, params = ("1=1", []) if not prefix else tags_mod.tag_match("t.name", prefix)
+        sql = f"""
+            SELECT t.name AS key, COUNT(DISTINCT tl.target_id) AS n
+            FROM tags t JOIN tag_links tl ON tl.tag_id = t.id
+            WHERE tl.target_type = 'conversation' AND {where_frag}
+            GROUP BY t.name ORDER BY n DESC
+        """  # noqa: S608
+        return conn.execute(sql, params).fetchall()
 
     if by == "tool":
         sql = """

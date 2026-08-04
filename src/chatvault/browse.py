@@ -4,6 +4,7 @@ import json
 import sqlite3
 from pathlib import Path
 
+from chatvault import tags as tags_mod
 from chatvault.config import Config
 
 # Spec v1.3 says `~/.chatvault/last_query.json`. Scoped under the vault root
@@ -62,11 +63,12 @@ def find(
         clauses.append("c.project = ?")
         params.append(project)
     if tag:
+        tag_frag, tag_params = tags_mod.tag_match("t.name", tag)
         clauses.append(
             "EXISTS (SELECT 1 FROM tag_links tl JOIN tags t ON t.id = tl.tag_id "
-            "WHERE tl.target_type = 'conversation' AND tl.target_id = c.id AND t.name = ?)"
+            f"WHERE tl.target_type = 'conversation' AND tl.target_id = c.id AND {tag_frag})"
         )
-        params.append(tag)
+        params.extend(tag_params)
     if has_attachments:
         clauses.append(
             "EXISTS (SELECT 1 FROM v_blocks b WHERE b.conv_id = c.id AND b.type = 'attachment')"

@@ -24,18 +24,21 @@ from chatvault import projects as projects_mod
 from chatvault import reconcile as reconcile_mod
 from chatvault import search as search_mod
 from chatvault import sources as sources_mod
+from chatvault import tags as tags_mod
 from chatvault import verify as verify_mod
 from chatvault.config import load_config
 from chatvault.db import connect, migrate
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 tag_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Manage tags.")
+tag_rule_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Automatic tagging rules, applied on ingest.")
 view_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Manage saved views.")
 graph_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Neo4j projection layer.")
 sources_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Track provenance of raw/ files.")
 curation_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Export/import the curation layer (tags, annotations, exclusions, views).")
 attachments_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Browse and curate attachments.")
 projects_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Browse projects (Claude Projects, etc.).")
+tag_app.add_typer(tag_rule_app, name="rule")
 app.add_typer(tag_app, name="tag")
 app.add_typer(view_app, name="view")
 app.add_typer(graph_app, name="graph")
@@ -407,7 +410,7 @@ def find(
     since: str = typer.Option(None, "--since", help="ISO date, inclusive."),
     before: str = typer.Option(None, "--before", help="ISO date, exclusive."),
     project: str = typer.Option(None, "--project"),
-    tag: str = typer.Option(None, "--tag"),
+    tag: str = typer.Option(None, "--tag", help="Exact tag name, or a prefix ending in '/**' to match that tag and everything nested under it, e.g. 'tech/macos/**'."),
     has_attachments: bool = typer.Option(False, "--has-attachments"),
     limit: int = typer.Option(20, "--limit"),
     sort: str = typer.Option("recent", "--sort", help="recent | oldest | longest"),
@@ -603,6 +606,124 @@ def tag_list() -> None:
     for r in rows:
         table.add_row(r["name"], str(r["uses"]))
     console.print(table)
+
+
+@tag_app.command("untag")
+def tag_untag(
+    name: str = typer.Argument(...),
+    where: str = typer.Option(None, "--where", help="SQL predicate over the target view."),
+    target: str = typer.Option("conversation", "--target", help="conversation | message | block"),
+    source: str = typer.Option(None, "--source", help="Only remove links applied by this source, e.g. 'folder_import' or 'rule' — the bulk-reversibility path."),
+) -> None:
+    """Remove a tag from matching rows. Pairs with `tag add`/`import-from-folders`/`rule` for reversibility — narrow with --source to undo exactly one bulk operation."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        n = tags_mod.untag(conn, name, where=where, target=target, source=source)
+    finally:
+        conn.close()
+    console.print(f"removed '{name}' from {n} {target}(s)")
+
+
+@tag_app.command("import-from-folders")
+def tag_import_from_folders(
+    path: Path = typer.Argument(..., exists=True, file_okay=False, help="Root of the folder tree to import."),
+    prefix: str = typer.Option(None, "--prefix", help="Prepended to every tag, e.g. 'project/claude-web'."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report matches/unmatches without writing tags."),
+) -> None:
+    """Turn an existing folder organisation into hierarchical tags. Matches
+    files to conversations by title + date; unmatched files are reported,
+    never silently dropped."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        report = tags_mod.import_from_folders(conn, path, prefix=prefix, dry_run=dry_run)
+    finally:
+        conn.close()
+
+    table = Table(title=f"import-from-folders{' (dry-run)' if dry_run else ''}: {path}")
+    table.add_column("file")
+    table.add_column("tag")
+    table.add_column("conv_uid")
+    for m in report.matched:
+        table.add_row(m["file"], m["tag"], m["conv_uid"])
+    console.print(table)
+
+    console.print(f"matched: {len(report.matched)}  unmatched: {len(report.unmatched)}")
+    if report.unmatched:
+        u_table = Table(title="unmatched")
+        u_table.add_column("file")
+        u_table.add_column("reason")
+        for u in report.unmatched:
+            u_table.add_row(u["file"], u["reason"])
+        console.print(u_table)
+
+
+@tag_rule_app.command("add")
+def tag_rule_add(
+    tag_name: str = typer.Argument(...),
+    where: str = typer.Option(..., "--where", help="SQL predicate over the real `blocks` table, e.g. \"blocks.text LIKE '%docker%'\"."),
+    min_hits: int = typer.Option(1, "--min-hits", help="Minimum matching blocks within a conversation before the tag applies."),
+) -> None:
+    """Store a rule. Applied automatically to new/changed conversations on
+    every future `ingest` (source='rule'); run `tag rule apply` to backfill
+    existing ones too. Always reversible: `tag untag <name> --source rule`."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        rule_id = tags_mod.rule_add(conn, tag_name, where, min_hits=min_hits)
+    finally:
+        conn.close()
+    console.print(f"rule #{rule_id} added: tag '{tag_name}' where ({where}) min_hits={min_hits}")
+
+
+@tag_rule_app.command("list")
+def tag_rule_list() -> None:
+    config = load_config()
+    conn = connect(config)
+    try:
+        rows = tags_mod.rule_list(conn)
+    finally:
+        conn.close()
+    table = Table(title="tag rules")
+    table.add_column("id")
+    table.add_column("tag")
+    table.add_column("where")
+    table.add_column("min_hits", justify="right")
+    table.add_column("enabled")
+    for r in rows:
+        table.add_row(str(r["id"]), r["tag_name"], r["where_sql"], str(r["min_hits"]), "yes" if r["enabled"] else "no")
+    console.print(table)
+
+
+@tag_rule_app.command("remove")
+def tag_rule_remove(rule_id: int = typer.Argument(...)) -> None:
+    """Deletes the rule definition. Does not retroactively untag anything —
+    use `tag untag <name> --source rule` for that."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        ok = tags_mod.rule_remove(conn, rule_id)
+    finally:
+        conn.close()
+    if not ok:
+        console.print(f"[red]no rule #{rule_id}[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"removed rule #{rule_id}")
+
+
+@tag_rule_app.command("apply")
+def tag_rule_apply() -> None:
+    """Backfill: (re-)evaluate every enabled rule against every live
+    conversation, not just new ones. Idempotent — already-applied tags are
+    skipped via the tag_links unique constraint."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        n = tags_mod.apply_rules(conn)
+    finally:
+        conn.close()
+    console.print(f"applied {n} new tag(s)")
 
 
 @view_app.command("save")
@@ -805,14 +926,15 @@ def search(
 
 @app.command()
 def stats(
-    by: str = typer.Option("platform", "--by", help="model | platform | project | month | tool"),
+    by: str = typer.Option("platform", "--by", help="model | platform | project | month | tool | tag"),
+    prefix: str = typer.Option(None, "--prefix", help="With --by tag: restrict to a tag prefix, e.g. 'tech/macos' (matches that tag and everything nested under it)."),
     unknown: bool = typer.Option(False, "--unknown", help="Report unmapped 'unknown' blocks by platform, so adapters can be improved incrementally."),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
     config = load_config()
     conn = connect(config)
     try:
-        rows = search_mod.unknown_block_report(conn) if unknown else search_mod.stats(conn, by)
+        rows = search_mod.unknown_block_report(conn) if unknown else search_mod.stats(conn, by, prefix=prefix)
     finally:
         conn.close()
 

@@ -171,6 +171,7 @@ def ingest_path(
 
     root_dir = str((path if path.is_dir() else path.parent).resolve())
     summary = IngestSummary()
+    touched_conv_ids: list[int] = []
 
     for file_path in _iter_candidate_files(path, exclude_dir):
         if adapter_name is None:
@@ -248,10 +249,12 @@ def ingest_path(
             load_result = loader.load_conversation(conn, cir, source_file_id)
             if load_result.action == "inserted":
                 result.inserted += 1
+                touched_conv_ids.append(load_result.conv_id)
             elif load_result.action == "noop":
                 result.noop += 1
             elif load_result.action == "superseded":
                 result.superseded += 1
+                touched_conv_ids.append(load_result.conv_id)
             elif load_result.action == "flagged_duplicate":
                 result.flagged += 1
         conn.commit()
@@ -261,6 +264,11 @@ def ingest_path(
         from chatvault import dedupe
 
         dedupe.scan_candidates(conn)
+
+        if touched_conv_ids:
+            from chatvault import tags as tags_mod
+
+            tags_mod.apply_rules(conn, conv_ids=touched_conv_ids)
 
         # Self-maintaining presence tracking: if this root has ever been
         # marked 'live', a fresh ingest is also the natural moment to notice
