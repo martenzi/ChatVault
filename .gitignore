@@ -4,6 +4,7 @@ __pycache__/
 .env
 db/
 exports/
+.chatvault/
 neo4j/
 raw/*
 !raw/_manifest.jsonl

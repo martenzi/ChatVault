@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import typer
@@ -9,6 +10,7 @@ from rich.table import Table
 
 from chatvault import audit as audit_mod
 from chatvault import backup as backup_mod
+from chatvault import browse as browse_mod
 from chatvault import curation
 from chatvault import curation_io
 from chatvault import dedupe as dedupe_mod
@@ -392,11 +394,98 @@ def audit(
 
 
 @app.command()
+def find(
+    query: str = typer.Argument(None, help="Free text. Titles match first, body text (FTS) second. Omit for most recent."),
+    platform: str = typer.Option(None, "--platform"),
+    since: str = typer.Option(None, "--since", help="ISO date, inclusive."),
+    before: str = typer.Option(None, "--before", help="ISO date, exclusive."),
+    project: str = typer.Option(None, "--project"),
+    tag: str = typer.Option(None, "--tag"),
+    has_attachments: bool = typer.Option(False, "--has-attachments"),
+    limit: int = typer.Option(20, "--limit"),
+    sort: str = typer.Option("recent", "--sort", help="recent | oldest | longest"),
+) -> None:
+    """Human-facing lister — find by title/date/platform, not uid. Numbers the
+    results and caches them so `export --pick`/`show --pick` can select by row."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        try:
+            rows, total = browse_mod.find(
+                conn, query=query, platform=platform, since=since, before=before,
+                project=project, tag=tag, has_attachments=has_attachments, limit=limit, sort=sort,
+            )
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+        browse_mod.save_result_cache(
+            conn, config, rows,
+            {"query": query, "platform": platform, "since": since, "before": before,
+             "project": project, "tag": tag, "has_attachments": has_attachments,
+             "limit": limit, "sort": sort},
+        )
+    finally:
+        conn.close()
+
+    table = Table(title=f"find: {query!r}" if query else "find: most recent")
+    table.add_column("#", justify="right")
+    table.add_column("date")
+    table.add_column("platform")
+    table.add_column("project")
+    table.add_column("title")
+    table.add_column("msgs", justify="right")
+    table.add_column("📎", justify="right")
+    for i, r in enumerate(rows, start=1):
+        table.add_row(
+            str(i),
+            (r["started_at"] or "")[:10] or "-",
+            r["platform"],
+            r["project"] or "—",
+            r["title"] or "Untitled",
+            str(r["message_count"]),
+            str(r["attachment_count"]) if r["attachment_count"] else "",
+        )
+    console.print(table)
+    console.print(f"showing {len(rows)} of {total} matches · saved as last query")
+
+
+def _interactive_pick(conn):
+    try:
+        import questionary
+    except ImportError:
+        return "no-questionary"
+
+    rows, _total = browse_mod.find(conn, limit=20, sort="recent")
+    if not rows:
+        console.print("[yellow]no conversations to pick from[/yellow]")
+        return None
+
+    choices = [
+        questionary.Choice(
+            title=f"{(r['started_at'] or '')[:10] or '-':10} {r['platform']:12} {(r['title'] or 'Untitled')[:50]}",
+            value=r,
+        )
+        for r in rows
+    ]
+    selected = questionary.select("Pick a conversation to export:", choices=choices).ask()
+    if selected is None:
+        return None
+    profile = questionary.select("Profile:", choices=["read", "lean", "full"], default="read").ask()
+    if profile is None:
+        return None
+    return {"row": selected, "profile": profile}
+
+
+@app.command()
 def export(
     uid: str = typer.Option(None, "--uid", help="Export a single conversation by uid."),
     where: str = typer.Option(None, "--where", help="SQL predicate over v_conversations."),
     view: str = typer.Option(None, "--view", help="Name of a saved view to export."),
-    template: str = typer.Option("default", "--template", help="default | full | obsidian | digest"),
+    pick: str = typer.Option(None, "--pick", help="Row number(s) from the last `find`, e.g. '2' or '1,3'."),
+    profile: str = typer.Option(None, "--profile", help="read | lean | full. Defaults to 'read' whenever --pick/--blocks/--max-tool-chars is used."),
+    blocks: str = typer.Option(None, "--blocks", help="Comma-separated block types to keep, e.g. 'text,code'. Overrides the profile's block selection."),
+    max_tool_chars: int = typer.Option(None, "--max-tool-chars", help="Collapse tool_use/tool_result bodies longer than this. Overrides the profile's own budget."),
+    template: str = typer.Option("default", "--template", help="default | full | obsidian | digest (legacy path — ignored once --profile/--pick/--blocks is set)."),
     out: Path = typer.Option(None, "--out", help="Output directory (default: <vault>/exports)."),
     split_by: str = typer.Option(None, "--split-by", help="'conversation' writes one file per conversation."),
 ) -> None:
@@ -404,7 +493,33 @@ def export(
     config = load_config()
     conn = connect(config)
     try:
-        rows = export_mod.get_conversations(conn, uid=uid, where=where, view=view)
+        use_profile = pick is not None or profile is not None or blocks is not None or max_tool_chars is not None
+
+        if uid is None and where is None and view is None and pick is None:
+            picked = _interactive_pick(conn)
+            if picked == "no-questionary":
+                console.print(
+                    "[red]No selection given, and the interactive picker (`questionary`) isn't installed.[/red]\n"
+                    "Install it with `pip install questionary`, or pass --uid/--where/--view/--pick."
+                )
+                raise typer.Exit(code=1)
+            if picked is None:
+                console.print("[dim]cancelled[/dim]")
+                raise typer.Exit(code=0)
+            rows = [picked["row"]]
+            use_profile = True
+            if profile is None:
+                profile = picked["profile"]
+        elif pick is not None:
+            try:
+                conv_ids = browse_mod.resolve_pick(conn, config, pick)
+            except (browse_mod.StaleCacheError, ValueError) as exc:
+                console.print(f"[red]{exc}[/red]")
+                raise typer.Exit(code=1)
+            rows = export_mod.get_conversations_by_ids(conn, conv_ids)
+        else:
+            rows = export_mod.get_conversations(conn, uid=uid, where=where, view=view)
+
         if not rows:
             console.print("[yellow]no conversations matched[/yellow]")
             raise typer.Exit(code=0)
@@ -412,27 +527,38 @@ def export(
         out_dir = out or config.exports_dir
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        if template == "digest":
+        if not use_profile and template == "digest":
             content = export_mod.render_digest(conn, rows)
             path = out_dir / "digest.md"
             path.write_text(content)
             console.print(f"wrote {path}")
             return
 
+        effective_profile = profile or "read"
+
+        def _render(row):
+            if use_profile:
+                return export_mod.render_profile(
+                    conn, row, profile=effective_profile, blocks=blocks, max_tool_chars=max_tool_chars
+                )
+            return export_mod.render(conn, row, template)
+
+        name_for_filename = effective_profile if use_profile else template
+
         if split_by == "conversation" or (uid is None and split_by is None and len(rows) > 1):
             for row in rows:
-                content = export_mod.render(conn, row, template)
+                content = _render(row)
                 conv = dict(row)
                 conv["uid_short"] = conv["uid"].split(":")[-1][:12]
-                fname = export_mod.filename_for(conv, template)
+                fname = export_mod.filename_for(conv, name_for_filename)
                 (out_dir / fname).write_text(content)
             console.print(f"wrote {len(rows)} file(s) to {out_dir}")
         else:
             row = rows[0]
-            content = export_mod.render(conn, row, template)
+            content = _render(row)
             conv = dict(row)
             conv["uid_short"] = conv["uid"].split(":")[-1][:12]
-            fname = export_mod.filename_for(conv, template)
+            fname = export_mod.filename_for(conv, name_for_filename)
             path = out_dir / fname
             path.write_text(content)
             console.print(f"wrote {path}")
@@ -708,19 +834,54 @@ def stats(
 
 @app.command()
 def show(
-    uid: str = typer.Argument(...),
-    template: str = typer.Option("full", "--template"),
+    uid: str = typer.Argument(None, help="Conversation uid. Omit when using --pick."),
+    pick: str = typer.Option(None, "--pick", help="Row number from the last `find` (exactly one)."),
+    profile: str = typer.Option("read", "--profile", help="read | lean | full."),
+    blocks: str = typer.Option(None, "--blocks", help="Comma-separated block types to keep, e.g. 'text,code'."),
+    max_tool_chars: int = typer.Option(None, "--max-tool-chars"),
+    template: str = typer.Option(None, "--template", help="Legacy path: default | full | obsidian. Overrides --profile/--blocks when given."),
+    raw: bool = typer.Option(False, "--raw", help="Print directly, no pager — for piping."),
 ) -> None:
+    """Read a conversation without exporting a file."""
     config = load_config()
     conn = connect(config)
     try:
-        rows = export_mod.get_conversations(conn, uid=uid)
-        if not rows:
-            console.print(f"[red]no conversation with uid {uid!r}[/red]")
+        if uid is None and pick is None:
+            console.print("[red]pass a uid or --pick <row>[/red]")
             raise typer.Exit(code=1)
-        console.print(export_mod.render(conn, rows[0], template))
+
+        if pick is not None:
+            try:
+                conv_ids = browse_mod.resolve_pick(conn, config, pick)
+            except (browse_mod.StaleCacheError, ValueError) as exc:
+                console.print(f"[red]{exc}[/red]")
+                raise typer.Exit(code=1)
+            if len(conv_ids) != 1:
+                console.print("[red]`show --pick` takes exactly one row[/red]")
+                raise typer.Exit(code=1)
+            rows = export_mod.get_conversations_by_ids(conn, conv_ids)
+        else:
+            rows = export_mod.get_conversations(conn, uid=uid)
+
+        if not rows:
+            console.print("[red]no matching conversation[/red]")
+            raise typer.Exit(code=1)
+
+        if template:
+            content = export_mod.render(conn, rows[0], template)
+        else:
+            content = export_mod.render_profile(
+                conn, rows[0], profile=profile, blocks=blocks, max_tool_chars=max_tool_chars
+            )
     finally:
         conn.close()
+
+    if raw or not sys.stdout.isatty():
+        console.print(content)
+    else:
+        import click
+
+        click.echo_via_pager(content)
 
 
 @graph_app.command("rebuild")

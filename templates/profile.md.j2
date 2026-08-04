@@ -1,0 +1,47 @@
+# {{ conv.title or "Untitled" }}
+
+- platform: {{ conv.platform }}
+- model: {{ conv.model_primary or "unknown" }}
+- date: {{ (conv.started_at or "")[:10] }}
+- uid: `{{ conv.uid }}`
+- profile: {{ profile }}
+{% if conv.tags %}
+- tags: {{ conv.tags | join(", ") }}
+{% endif %}
+
+---
+
+{% for msg in conv.messages %}
+{% if msg.role in ("user", "assistant") %}
+## {{ msg.role | capitalize }}
+
+{% for block in msg.blocks %}
+{% if block.type in ("text", "code") %}
+{{ block.text }}
+
+{% elif block.type == "thinking" %}
+<details><summary>thinking</summary>
+
+{{ block.text }}
+
+</details>
+
+{% elif block.type in ("tool_use", "tool_result") %}
+> {{ block.text }}
+
+{% elif block.type == "attachment" %}
+*[attachment: {{ block.text[:80] }}]*
+
+{% elif block.type == "image" %}
+*[image block]*
+
+{% elif block.type == "error" %}
+**error:** {{ block.text }}
+
+{% else %}
+*[{{ block.type }} block]*
+
+{% endif %}
+{% endfor %}
+{% endif %}
+{% endfor %}

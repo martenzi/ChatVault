@@ -9,6 +9,7 @@ dependencies = [
   "orjson>=3.10",
   "python-dateutil>=2.9",
   "neo4j>=5.23",
+  "questionary>=2.0",
 ]
 
 [project.optional-dependencies]

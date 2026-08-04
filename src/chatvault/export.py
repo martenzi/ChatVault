@@ -106,3 +106,99 @@ def render_digest(conn: sqlite3.Connection, conv_rows: list[sqlite3.Row]) -> str
     tmpl = env.get_template("digest.md.j2")
     convs = [_fetch_conversation(conn, r) for r in conv_rows]
     return tmpl.render(conversations=convs)
+
+
+def get_conversations_by_ids(conn: sqlite3.Connection, ids: list[int]) -> list[sqlite3.Row]:
+    """Fetch conversations by id, preserving the given order (row order from
+    a `find` pick, not insertion/id order)."""
+    if not ids:
+        return []
+    placeholders = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"SELECT * FROM v_conversations WHERE id IN ({placeholders})", ids  # noqa: S608
+    ).fetchall()
+    by_id = {r["id"]: r for r in rows}
+    return [by_id[i] for i in ids if i in by_id]
+
+
+# Spec v1.3 §4 — export profiles. `read` (renamed from the old "default"
+# template) always collapses tool calls to one line, regardless of size.
+# `lean` keeps short tool bodies but collapses anything over its budget.
+# `full` never collapses. `--max-tool-chars` overrides whichever budget the
+# profile picked; `--blocks` is a separate axis that restricts block types
+# outright and wins over the profile's own thinking-block default.
+#
+# These are not a size ladder (spec §4 note): `read` optimises for human eyes
+# (collapse every tool call), `lean` for an AI's context window (keep short
+# tool results verbatim, they're often the signal). `lean` can legitimately
+# come out larger than `read` on a conversation with many small tool calls —
+# only `full >= read` and `full >= lean` are guaranteed. Text/code blocks are
+# never touched by any profile, only thinking (dropped) and tool_use/
+# tool_result (collapsed) are — this is what keeps dialogue integrity: lean
+# reproduces every user/assistant prose block verbatim and complete.
+PROFILES = {"read", "lean", "full"}
+_PROFILE_TOOL_BUDGET = {"read": 0, "lean": 500, "full": None}
+
+
+def _resolve_tool_budget(profile: str, max_tool_chars: int | None) -> tuple[int | None, str]:
+    if max_tool_chars is not None:
+        return max_tool_chars, "bracket"
+    budget = _PROFILE_TOOL_BUDGET[profile]
+    return budget, ("arrow" if profile == "read" else "bracket")
+
+
+def _maybe_collapse_tool_block(block: dict, budget: int | None, style: str) -> dict:
+    if budget is None:
+        return block
+    text = block["text"]
+    if style != "arrow" and len(text) <= budget:
+        return block
+
+    name = block.get("tool_name") or "unknown"
+    collapsed = dict(block)
+    if style == "arrow":
+        collapsed["text"] = (
+            f"→ ran {name}(...)"
+            if block["type"] == "tool_use"
+            else f"→ {name} result ({len(text):,} chars, collapsed)"
+        )
+    else:
+        collapsed["text"] = f"[tool: {name}, {len(text):,} chars omitted]"
+    return collapsed
+
+
+def render_profile(
+    conn: sqlite3.Connection,
+    conv_row: sqlite3.Row,
+    profile: str = "read",
+    blocks: str | None = None,
+    max_tool_chars: int | None = None,
+) -> str:
+    """Render via a named profile (read/lean/full) instead of a raw template.
+    `blocks` restricts output to a set of block types ('text,code'), overriding
+    the profile's default thinking-block handling. `max_tool_chars` overrides
+    the profile's tool-call collapsing budget."""
+    if profile not in PROFILES:
+        raise ValueError(f"profile must be one of {sorted(PROFILES)}, got {profile!r}")
+
+    budget, style = _resolve_tool_budget(profile, max_tool_chars)
+    allowed_types = {t.strip() for t in blocks.split(",") if t.strip()} if blocks else None
+
+    conv = _fetch_conversation(conn, conv_row)
+    for msg in conv["messages"]:
+        filtered = []
+        for block in msg["blocks"]:
+            btype = block["type"]
+            if allowed_types is not None:
+                if btype not in allowed_types:
+                    continue
+            elif profile != "full" and btype == "thinking":
+                continue
+            if btype in ("tool_use", "tool_result"):
+                block = _maybe_collapse_tool_block(block, budget, style)
+            filtered.append(block)
+        msg["blocks"] = filtered
+
+    env = _env()
+    tmpl = env.get_template("profile.md.j2")
+    return tmpl.render(conv=conv, profile=profile)
