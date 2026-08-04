@@ -8,6 +8,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from chatvault import attachments as attachments_mod
 from chatvault import audit as audit_mod
 from chatvault import backup as backup_mod
 from chatvault import browse as browse_mod
@@ -19,6 +20,7 @@ from chatvault import export as export_mod
 from chatvault import graph as graph_mod
 from chatvault import ingest as ingest_mod
 from chatvault import inventory as inventory_mod
+from chatvault import projects as projects_mod
 from chatvault import reconcile as reconcile_mod
 from chatvault import search as search_mod
 from chatvault import sources as sources_mod
@@ -32,11 +34,15 @@ view_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Manage 
 graph_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Neo4j projection layer.")
 sources_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Track provenance of raw/ files.")
 curation_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Export/import the curation layer (tags, annotations, exclusions, views).")
+attachments_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Browse and curate attachments.")
+projects_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Browse projects (Claude Projects, etc.).")
 app.add_typer(tag_app, name="tag")
 app.add_typer(view_app, name="view")
 app.add_typer(graph_app, name="graph")
 app.add_typer(sources_app, name="sources")
 app.add_typer(curation_app, name="curation")
+app.add_typer(attachments_app, name="attachments")
+app.add_typer(projects_app, name="projects")
 console = Console()
 
 
@@ -197,6 +203,7 @@ def ingest(
     adapter: str = typer.Option(None, "--adapter", help="Force a specific adapter instead of auto-detecting."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Parse and report without writing to the database."),
     force: bool = typer.Option(False, "--force", help="Allow ingesting raw_exclusions/ directly."),
+    reprocess: bool = typer.Option(False, "--reprocess", help="Bypass the file-level dedup and re-parse already-seen files. Existing conversations still resolve as noop by content_hash — this is for backfilling metadata an adapter fix now extracts (e.g. attachments) without ever duplicating rows."),
 ) -> None:
     """Ingest RAW export file(s) into SQLite. Idempotent — safe to re-run."""
     config = load_config()
@@ -208,7 +215,7 @@ def ingest(
     conn = connect(config)
     try:
         try:
-            summary = ingest_mod.ingest_path(conn, path, adapter_name=adapter, dry_run=dry_run, force=force, config=config)
+            summary = ingest_mod.ingest_path(conn, path, adapter_name=adapter, dry_run=dry_run, force=force, config=config, reprocess=reprocess)
         except ValueError as exc:
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(code=1)
@@ -1119,6 +1126,183 @@ def curation_replace_annotations(
     finally:
         conn.close()
     console.print(f"deleted {summary.deleted} annotation(s), added {summary.added} from {file}")
+
+
+@attachments_app.command("list")
+def attachments_list(
+    conv: int = typer.Option(None, "--conv", help="Conversation id."),
+    project: int = typer.Option(None, "--project", help="Project id."),
+    platform: str = typer.Option(None, "--platform"),
+    type_: str = typer.Option(None, "--type", help="Extension, e.g. 'pdf'."),
+    missing: bool = typer.Option(False, "--missing", help="Only availability='missing' rows."),
+) -> None:
+    config = load_config()
+    conn = connect(config)
+    try:
+        rows = attachments_mod.list_attachments(conn, conv=conv, project=project, platform=platform, type_=type_, missing=missing)
+    finally:
+        conn.close()
+    table = Table(title="attachments")
+    table.add_column("id")
+    table.add_column("filename")
+    table.add_column("platform")
+    table.add_column("availability")
+    table.add_column("bytes", justify="right")
+    for r in rows:
+        table.add_row(str(r["id"]), r["filename"] or "-", r["platform"], r["availability"], str(r["bytes"] or ""))
+    console.print(table)
+    console.print(f"{len(rows)} attachment(s)")
+
+
+@attachments_app.command("show")
+def attachments_show(attachment_id: int = typer.Argument(...)) -> None:
+    config = load_config()
+    conn = connect(config)
+    try:
+        row = attachments_mod.show(conn, attachment_id)
+    finally:
+        conn.close()
+    if row is None:
+        console.print(f"[red]no attachment with id {attachment_id}[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"# {row['filename'] or 'untitled'}  ({row['platform']}, {row['availability']})")
+    console.print(row["content"] or "[dim](no content — availability != 'text')[/dim]")
+
+
+@attachments_app.command("stats")
+def attachments_stats() -> None:
+    config = load_config()
+    conn = connect(config)
+    try:
+        data = attachments_mod.stats(conn)
+    finally:
+        conn.close()
+    console.print(f"total: {data['total']}  bytes: {_human_bytes(data['bytes'])}  missing: {data['missing']}")
+    table = Table(title="by platform")
+    table.add_column("platform")
+    table.add_column("count", justify="right")
+    for r in data["by_platform"]:
+        table.add_row(r["platform"], str(r["n"]))
+    console.print(table)
+
+
+@attachments_app.command("search")
+def attachments_search(
+    query: str = typer.Argument(...),
+    limit: int = typer.Option(20, "--limit"),
+) -> None:
+    config = load_config()
+    conn = connect(config)
+    try:
+        rows = attachments_mod.search(conn, query, limit=limit)
+    finally:
+        conn.close()
+    table = Table(title=f"attachments search: {query!r}")
+    table.add_column("id")
+    table.add_column("filename")
+    table.add_column("platform")
+    table.add_column("snippet")
+    for r in rows:
+        table.add_row(str(r["id"]), r["filename"] or "-", r["platform"], r["snippet"])
+    console.print(table)
+
+
+@attachments_app.command("exclude")
+def attachments_exclude(
+    attachment_id: int = typer.Argument(None),
+    where: str = typer.Option(None, "--where", help="SQL predicate over attachments."),
+    reason: str = typer.Option(None, "--reason"),
+) -> None:
+    """Hide it. Reversible. The normal move."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        try:
+            n = attachments_mod.exclude(conn, attachment_id=attachment_id, where=where, reason=reason)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+    finally:
+        conn.close()
+    console.print(f"excluded {n} attachment(s)")
+
+
+@attachments_app.command("restore")
+def attachments_restore(
+    attachment_id: int = typer.Argument(None),
+    where: str = typer.Option(None, "--where"),
+) -> None:
+    config = load_config()
+    conn = connect(config)
+    try:
+        try:
+            n = attachments_mod.restore(conn, attachment_id=attachment_id, where=where)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+    finally:
+        conn.close()
+    console.print(f"restored {n} attachment(s)")
+
+
+@attachments_app.command("redact")
+def attachments_redact(
+    attachment_id: int = typer.Argument(None),
+    where: str = typer.Option(None, "--where"),
+    confirm: bool = typer.Option(False, "--confirm"),
+) -> None:
+    """Wipe the content, keep the record: content -> NULL, availability ->
+    'missing'. You keep the historical fact it existed, lose the text."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        try:
+            n = attachments_mod.redact(conn, attachment_id=attachment_id, where=where, confirm=confirm)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+    finally:
+        conn.close()
+    console.print(f"redacted {n} attachment(s)")
+
+
+@attachments_app.command("purge")
+def attachments_purge(
+    attachment_id: int = typer.Argument(None),
+    where: str = typer.Option(None, "--where"),
+    confirm: bool = typer.Option(False, "--confirm"),
+) -> None:
+    """Delete the row entirely. Takes a backup first, logs it, requires --confirm."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        try:
+            n = attachments_mod.purge(conn, config, attachment_id=attachment_id, where=where, confirm=confirm)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+    finally:
+        conn.close()
+    console.print(f"purged {n} attachment(s)")
+
+
+@projects_app.command("list")
+def projects_list() -> None:
+    config = load_config()
+    conn = connect(config)
+    try:
+        rows = projects_mod.list_projects(conn)
+    finally:
+        conn.close()
+    table = Table(title="projects")
+    table.add_column("id")
+    table.add_column("platform")
+    table.add_column("project")
+    table.add_column("convs", justify="right")
+    table.add_column("docs", justify="right")
+    for r in rows:
+        table.add_row(str(r["id"]), r["platform"], r["name"], str(r["convs"]), str(r["docs"]))
+    console.print(table)
 
 
 if __name__ == "__main__":

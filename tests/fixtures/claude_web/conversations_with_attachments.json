@@ -1,0 +1,48 @@
+[
+  {
+    "uuid": "web-conv-att-1",
+    "name": "Timeline with attachment",
+    "created_at": "2026-04-01T10:00:00Z",
+    "updated_at": "2026-04-01T10:05:00Z",
+    "chat_messages": [
+      {
+        "uuid": "m1",
+        "sender": "human",
+        "text": "Here's my timeline",
+        "created_at": "2026-04-01T10:00:00Z",
+        "content": [
+          {"type": "text", "text": "Here's my timeline"}
+        ],
+        "attachments": [
+          {
+            "file_name": "timeline.txt",
+            "file_size": 42,
+            "file_type": "txt",
+            "extracted_content": "2021: started Company A as a franchise operator in Trelleborg."
+          }
+        ]
+      },
+      {
+        "uuid": "m2",
+        "sender": "assistant",
+        "text": "Thanks, I see it.",
+        "created_at": "2026-04-01T10:01:00Z",
+        "content": [
+          {"type": "text", "text": "Thanks, I see it."}
+        ]
+      },
+      {
+        "uuid": "m3",
+        "sender": "human",
+        "text": "Also attaching a pdf",
+        "created_at": "2026-04-01T10:02:00Z",
+        "content": [
+          {"type": "text", "text": "Also attaching a pdf"}
+        ],
+        "files": [
+          {"file_name": "statement.pdf"}
+        ]
+      }
+    ]
+  }
+]

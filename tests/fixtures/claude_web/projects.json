@@ -1,0 +1,33 @@
+[
+  {
+    "uuid": "proj-1",
+    "name": "Second Brain",
+    "description": "Personal knowledge base",
+    "is_private": true,
+    "is_starter_project": false,
+    "prompt_template": "You are my research assistant for this project.",
+    "created_at": "2026-01-01T00:00:00Z",
+    "updated_at": "2026-01-02T00:00:00Z",
+    "creator": {"uuid": "u1", "full_name": "Test User"},
+    "docs": [
+      {
+        "uuid": "doc-1",
+        "filename": "notes.md",
+        "content": "The distinctive phrase inside this project doc is quokkawombat42.",
+        "created_at": "2026-01-01T00:00:00Z"
+      }
+    ]
+  },
+  {
+    "uuid": "proj-2",
+    "name": "Empty Project",
+    "description": "",
+    "is_private": true,
+    "is_starter_project": false,
+    "prompt_template": "",
+    "created_at": "2026-01-03T00:00:00Z",
+    "updated_at": "2026-01-03T00:00:00Z",
+    "creator": {"uuid": "u1", "full_name": "Test User"},
+    "docs": []
+  }
+]

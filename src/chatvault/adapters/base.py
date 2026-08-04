@@ -31,7 +31,14 @@ class Adapter(Protocol):
         ...
 
 
-def make_block(idx: int, type_: str, text: str, raw: dict, tool_name: str | None = None) -> dict:
+def make_block(
+    idx: int,
+    type_: str,
+    text: str,
+    raw: dict,
+    tool_name: str | None = None,
+    attachment: dict | None = None,
+) -> dict:
     if type_ not in BLOCK_TYPES:
         type_ = "unknown"
     return {
@@ -40,6 +47,35 @@ def make_block(idx: int, type_: str, text: str, raw: dict, tool_name: str | None
         "tool_name": tool_name,
         "text": text or "",
         "raw": raw,
+        "attachment": attachment,
+    }
+
+
+def make_attachment(
+    *,
+    filename: str | None,
+    mime: str | None = None,
+    ext: str | None = None,
+    bytes_: int | None = None,
+    content: str | None = None,
+    availability: str = "text",
+    store_path: str | None = None,
+    role: str = "upload",
+    raw: dict | None = None,
+) -> dict:
+    """Payload attached to a make_block(type_='attachment', ...) call, or used
+    directly for a project doc. `role` becomes attachment_links.role once the
+    loader creates the link ('upload' | 'artifact' | 'project_knowledge')."""
+    return {
+        "filename": filename,
+        "mime": mime,
+        "ext": ext,
+        "bytes": bytes_,
+        "content": content,
+        "availability": availability,
+        "store_path": store_path,
+        "role": role,
+        "raw": raw if raw is not None else {},
     }
 
 

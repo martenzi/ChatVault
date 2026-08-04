@@ -67,3 +67,22 @@ def detect(path: Path) -> ModuleType | None:
 def all_names() -> list[str]:
     register_late_adapters()
     return list(_REGISTRY.keys())
+
+
+def detect_projects(path: Path) -> ModuleType | None:
+    """A small number of adapters also expose sniff_projects/parse_projects
+    for a structurally distinct file (e.g. Claude's separate projects.json,
+    unrelated in shape to its conversations export). Checked separately from
+    detect() so a plain conversations-adapter never has to know about it."""
+    register_late_adapters()
+    for mod in _REGISTRY.values():
+        sniff_fn = getattr(mod, "sniff_projects", None)
+        parse_fn = getattr(mod, "parse_projects", None)
+        if sniff_fn is None or parse_fn is None:
+            continue
+        try:
+            if sniff_fn(path):
+                return mod
+        except Exception:
+            continue
+    return None

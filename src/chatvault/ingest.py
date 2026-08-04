@@ -73,6 +73,75 @@ def _iter_candidate_files(path: Path, exclude_dir: Path | None = None) -> list[P
     )
 
 
+def _ingest_projects_file(
+    conn: sqlite3.Connection, file_path: Path, mod, root_dir: str, dry_run: bool
+) -> FileIngestResult:
+    """Projects files (e.g. Claude's projects.json) are structurally distinct
+    from conversation exports and go through loader.load_project instead of
+    load_conversation. `inserted` = new project rows, `noop` = existing
+    project rows refreshed — mirrors the conversation counters' meaning
+    closely enough for the shared ingest summary table."""
+    adapter_label = f"{mod.name} (projects)"
+    now = datetime.now(timezone.utc).isoformat()
+    sha = hashing.file_sha256(file_path)
+
+    existing = conn.execute("SELECT id, status FROM source_files WHERE sha256 = ?", (sha,)).fetchone()
+    if existing is not None and existing["status"] == "ok":
+        if not dry_run:
+            conn.execute("UPDATE source_files SET last_seen_at = ? WHERE id = ?", (now, existing["id"]))
+            conn.commit()
+        return FileIngestResult(file_path, "skipped_dup", adapter=adapter_label)
+
+    if dry_run:
+        try:
+            projects = list(mod.parse_projects(file_path))
+            return FileIngestResult(file_path, "ok", adapter=adapter_label, inserted=len(projects))
+        except Exception as exc:  # noqa: BLE001
+            return FileIngestResult(file_path, "failed", adapter=adapter_label, error=str(exc))
+
+    try:
+        projects = list(mod.parse_projects(file_path))
+    except Exception as exc:  # noqa: BLE001
+        conn.execute(
+            """
+            INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, error, kind, last_seen_at, root_dir, first_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'failed', ?, 'frozen', ?, ?, ?)
+            ON CONFLICT(sha256) DO UPDATE SET
+                status='failed', error=excluded.error, ingested_at=excluded.ingested_at,
+                last_seen_at=excluded.last_seen_at, root_dir=excluded.root_dir,
+                first_seen_at=COALESCE(source_files.first_seen_at, excluded.first_seen_at)
+            """,
+            (str(file_path), sha, mod.platform, f"{mod.name}_projects", file_path.stat().st_size, now, str(exc), now, root_dir, now),
+        )
+        conn.commit()
+        return FileIngestResult(file_path, "failed", adapter=adapter_label, error=str(exc))
+
+    cur = conn.execute(
+        """
+        INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, kind, last_seen_at, root_dir, first_seen_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'ok', 'frozen', ?, ?, ?)
+        ON CONFLICT(sha256) DO UPDATE SET
+            status='ok', error=NULL, ingested_at=excluded.ingested_at,
+            last_seen_at=excluded.last_seen_at, root_dir=excluded.root_dir,
+            first_seen_at=COALESCE(source_files.first_seen_at, excluded.first_seen_at)
+        """,
+        (str(file_path), sha, mod.platform, f"{mod.name}_projects", file_path.stat().st_size, now, now, root_dir, now),
+    )
+    source_file_id = cur.lastrowid or conn.execute(
+        "SELECT id FROM source_files WHERE sha256 = ?", (sha,)
+    ).fetchone()["id"]
+
+    result = FileIngestResult(file_path, "ok", adapter=adapter_label)
+    for project in projects:
+        load_result = loader.load_project(conn, project, source_file_id)
+        if load_result["action"] == "inserted":
+            result.inserted += 1
+        else:
+            result.noop += 1
+    conn.commit()
+    return result
+
+
 def ingest_path(
     conn: sqlite3.Connection,
     path: Path,
@@ -80,6 +149,7 @@ def ingest_path(
     dry_run: bool = False,
     force: bool = False,
     config: Config | None = None,
+    reprocess: bool = False,
 ) -> IngestSummary:
     exclude_dir = None
     if config is not None:
@@ -103,6 +173,14 @@ def ingest_path(
     summary = IngestSummary()
 
     for file_path in _iter_candidate_files(path, exclude_dir):
+        if adapter_name is None:
+            projects_mod = adapters.detect_projects(file_path)
+            if projects_mod is not None:
+                summary.files.append(
+                    _ingest_projects_file(conn, file_path, projects_mod, root_dir, dry_run=dry_run)
+                )
+                continue
+
         mod = adapters.get(adapter_name) if adapter_name else adapters.detect(file_path)
         if mod is None:
             summary.files.append(FileIngestResult(file_path, "skipped_no_adapter"))
@@ -112,7 +190,7 @@ def ingest_path(
         existing = conn.execute(
             "SELECT id, status FROM source_files WHERE sha256 = ?", (sha,)
         ).fetchone()
-        if existing is not None and existing["status"] == "ok":
+        if existing is not None and existing["status"] == "ok" and not reprocess:
             if not dry_run:
                 conn.execute(
                     "UPDATE source_files SET last_seen_at = ? WHERE id = ?",

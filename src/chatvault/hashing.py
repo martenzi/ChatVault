@@ -44,3 +44,7 @@ def normalize_note(note: str) -> str:
 
 def note_hash(note: str) -> str:
     return hashlib.sha256(normalize_note(note).encode("utf-8")).hexdigest()
+
+
+def attachment_content_hash(content: str | None) -> str:
+    return hashlib.sha256((content or "").encode("utf-8")).hexdigest()
