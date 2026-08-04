@@ -39,6 +39,7 @@ def find(
     project: str | None = None,
     tag: str | None = None,
     has_attachments: bool = False,
+    untagged: bool = False,
     limit: int = 20,
     sort: str = "recent",
 ) -> tuple[list[sqlite3.Row], int]:
@@ -72,6 +73,10 @@ def find(
     if has_attachments:
         clauses.append(
             "EXISTS (SELECT 1 FROM v_blocks b WHERE b.conv_id = c.id AND b.type = 'attachment')"
+        )
+    if untagged:
+        clauses.append(
+            "NOT EXISTS (SELECT 1 FROM tag_links tl WHERE tl.target_type = 'conversation' AND tl.target_id = c.id)"
         )
     where_sql = " AND ".join(clauses)
 

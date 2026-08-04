@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+import yaml
+
 from chatvault.export import slugify
 
 _TARGET_VIEW = {"conversation": "v_conversations", "message": "v_messages", "block": "v_blocks"}
@@ -19,6 +21,51 @@ def _get_or_create_tag(conn: sqlite3.Connection, name: str) -> int:
     now = _now()
     conn.execute("INSERT INTO tags (name, created_at) VALUES (?, ?) ON CONFLICT(name) DO NOTHING", (name, now))
     return conn.execute("SELECT id FROM tags WHERE name = ?", (name,)).fetchone()[0]
+
+
+# Public alias — the tagging screen (screen_state.py) needs to create tags
+# one link at a time (to track exactly which conversations changed, for
+# undo), so it calls straight into tag creation rather than tag_add()'s
+# bulk --where path.
+get_or_create_tag = _get_or_create_tag
+now = _now
+
+
+@dataclass
+class TagTreeNode:
+    name: str  # this segment only, e.g. 'macos'
+    path: str  # full dotted... slashed path, e.g. 'tech/macos'
+    uses: int = 0
+    children: dict = field(default_factory=dict)  # name -> TagTreeNode
+
+
+def build_tag_tree(conn: sqlite3.Connection) -> dict:
+    """Every tag in the DB, nested into a tree by its '/'-delimited segments,
+    for the tagging screen's clickable tree pane. Intermediate segments that
+    have no tag row of their own (e.g. 'tech' when only 'tech/macos/npm'
+    exists) still appear, as pure navigation nodes with uses=0."""
+    rows = conn.execute(
+        """
+        SELECT t.name AS name, COUNT(tl.tag_id) AS uses
+        FROM tags t LEFT JOIN tag_links tl ON tl.tag_id = t.id
+        GROUP BY t.id ORDER BY t.name
+        """
+    ).fetchall()
+
+    roots: dict = {}
+    for row in rows:
+        parts = row["name"].split("/")
+        level = roots
+        path = ""
+        for i, part in enumerate(parts):
+            path = f"{path}/{part}" if path else part
+            if part not in level:
+                level[part] = TagTreeNode(name=part, path=path)
+            node = level[part]
+            if i == len(parts) - 1:
+                node.uses = row["uses"]
+            level = node.children
+    return roots
 
 
 # ─────────────── hierarchical tag queries (spec §2, §9 item 2) ───────────────
@@ -245,3 +292,99 @@ def apply_rules(conn: sqlite3.Connection, conv_ids: list[int] | None = None) -> 
                 applied += 1
     conn.commit()
     return applied
+
+
+# ─────────────── tag import-tree from YAML (Tagging Workflow §2, §8 item 1) ───────────────
+
+
+def _walk_taxonomy(node, prefix: str):
+    """Yields every tag path implied by a nested taxonomy structure. Both
+    branch nodes (dict keys, list-holders) and leaf nodes (list items, or a
+    dict key whose value is null) become tags — the doc's own mockup shows
+    branches as expand/collapse nodes in the tree and leaves as click-to-
+    apply buttons, but nothing stops a branch being applied directly too, so
+    every node in the tree gets a real row."""
+    if node is None:
+        return
+    if isinstance(node, dict):
+        for key, value in node.items():
+            path = f"{prefix}/{slugify(str(key))}" if prefix else slugify(str(key))
+            yield path
+            yield from _walk_taxonomy(value, path)
+    elif isinstance(node, list):
+        for item in node:
+            if isinstance(item, (dict, list)):
+                yield from _walk_taxonomy(item, prefix)
+            else:
+                yield f"{prefix}/{slugify(str(item))}" if prefix else slugify(str(item))
+    else:
+        yield f"{prefix}/{slugify(str(node))}" if prefix else slugify(str(node))
+
+
+def import_tree(conn: sqlite3.Connection, path: Path, dry_run: bool = False) -> list[str]:
+    """Parses a nested YAML taxonomy into real tag rows — no tag_links, just
+    makes the whole tree exist in the palette before any conversation is
+    tagged. Idempotent: existing tags are left alone (ON CONFLICT DO NOTHING)."""
+    data = yaml.safe_load(path.read_text()) or {}
+    tag_names = sorted(set(_walk_taxonomy(data, "")))
+    if not dry_run:
+        for name in tag_names:
+            _get_or_create_tag(conn, name)
+        conn.commit()
+    return tag_names
+
+
+# ─────────────── tag rename / merge (Tagging Workflow §8 item 5) ───────────────
+
+
+def rename(conn: sqlite3.Connection, old_name: str, new_name: str) -> int:
+    """Renames `old_name` and everything nested under it (old_name/**) to the
+    equivalent path under `new_name`. Every tag_link is preserved as-is (they
+    reference tag_id, never name) — this only ever touches tags.name, merging
+    into an existing tag if the new path collides with one that already
+    exists (rather than erroring), same reasoning as merge() below."""
+    affected = conn.execute(
+        "SELECT id, name FROM tags WHERE name = ? OR name LIKE ?",
+        (old_name, f"{old_name}/%"),
+    ).fetchall()
+
+    renamed = 0
+    for row in affected:
+        suffix = row["name"][len(old_name):]  # '' for the exact tag, '/child/...' for descendants
+        target_name = new_name + suffix
+        existing = conn.execute("SELECT id FROM tags WHERE name = ?", (target_name,)).fetchone()
+        if existing is not None and existing["id"] != row["id"]:
+            conn.execute("UPDATE OR IGNORE tag_links SET tag_id = ? WHERE tag_id = ?", (existing["id"], row["id"]))
+            conn.execute("DELETE FROM tag_links WHERE tag_id = ?", (row["id"],))  # unmigratable duplicates
+            conn.execute("DELETE FROM tags WHERE id = ?", (row["id"],))
+        else:
+            conn.execute("UPDATE tags SET name = ? WHERE id = ?", (target_name, row["id"]))
+        renamed += 1
+
+    conn.commit()
+    return renamed
+
+
+def merge(conn: sqlite3.Connection, source_name: str, target_name: str) -> int:
+    """Moves every tag_link from `source_name` onto `target_name` (both must
+    already exist), then deletes the now-empty source tag. Unlike rename,
+    this does not recurse into nested tags — merge consolidates two specific
+    tags, not a branch. Returns the number of links actually moved."""
+    source = conn.execute("SELECT id FROM tags WHERE name = ?", (source_name,)).fetchone()
+    target = conn.execute("SELECT id FROM tags WHERE name = ?", (target_name,)).fetchone()
+    if source is None:
+        raise ValueError(f"no tag named {source_name!r}")
+    if target is None:
+        raise ValueError(f"no tag named {target_name!r}")
+    if source["id"] == target["id"]:
+        return 0
+
+    before = conn.execute("SELECT COUNT(*) FROM tag_links WHERE tag_id = ?", (source["id"],)).fetchone()[0]
+    conn.execute("UPDATE OR IGNORE tag_links SET tag_id = ? WHERE tag_id = ?", (target["id"], source["id"]))
+    remaining = conn.execute("SELECT COUNT(*) FROM tag_links WHERE tag_id = ?", (source["id"],)).fetchone()[0]
+    moved = before - remaining
+
+    conn.execute("DELETE FROM tag_links WHERE tag_id = ?", (source["id"],))  # links target already had too
+    conn.execute("DELETE FROM tags WHERE id = ?", (source["id"],))
+    conn.commit()
+    return moved

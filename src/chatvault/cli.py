@@ -412,6 +412,7 @@ def find(
     project: str = typer.Option(None, "--project"),
     tag: str = typer.Option(None, "--tag", help="Exact tag name, or a prefix ending in '/**' to match that tag and everything nested under it, e.g. 'tech/macos/**'."),
     has_attachments: bool = typer.Option(False, "--has-attachments"),
+    untagged: bool = typer.Option(False, "--untagged", help="Only conversations with no tags at all."),
     limit: int = typer.Option(20, "--limit"),
     sort: str = typer.Option("recent", "--sort", help="recent | oldest | longest"),
 ) -> None:
@@ -423,7 +424,7 @@ def find(
         try:
             rows, total = browse_mod.find(
                 conn, query=query, platform=platform, since=since, before=before,
-                project=project, tag=tag, has_attachments=has_attachments, limit=limit, sort=sort,
+                project=project, tag=tag, has_attachments=has_attachments, untagged=untagged, limit=limit, sort=sort,
             )
         except ValueError as exc:
             console.print(f"[red]{exc}[/red]")
@@ -431,7 +432,7 @@ def find(
         browse_mod.save_result_cache(
             conn, config, rows,
             {"query": query, "platform": platform, "since": since, "before": before,
-             "project": project, "tag": tag, "has_attachments": has_attachments,
+             "project": project, "tag": tag, "has_attachments": has_attachments, "untagged": untagged,
              "limit": limit, "sort": sort},
         )
     finally:
@@ -657,6 +658,61 @@ def tag_import_from_folders(
         for u in report.unmatched:
             u_table.add_row(u["file"], u["reason"])
         console.print(u_table)
+
+
+@tag_app.command("import-tree")
+def tag_import_tree_cmd(
+    path: Path = typer.Argument(..., exists=True, dir_okay=False, help="YAML taxonomy file."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report what would be created without writing anything."),
+) -> None:
+    """Parse a nested YAML taxonomy into real tag rows — no conversations
+    tagged, just makes the whole tree exist in the palette up front."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        names = tags_mod.import_tree(conn, path, dry_run=dry_run)
+    finally:
+        conn.close()
+    console.print(f"{'would create' if dry_run else 'ensured'} {len(names)} tag(s)")
+    for name in names:
+        console.print(f"  {name}")
+
+
+@tag_app.command("rename")
+def tag_rename_cmd(
+    old_name: str = typer.Argument(...),
+    new_name: str = typer.Argument(...),
+) -> None:
+    """Renames a tag and everything nested under it (old/**). Every tag_link
+    is preserved. Merges into the destination if it already exists."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        n = tags_mod.rename(conn, old_name, new_name)
+    finally:
+        conn.close()
+    console.print(f"renamed {n} tag(s): '{old_name}' -> '{new_name}' (and everything nested under it)")
+
+
+@tag_app.command("merge")
+def tag_merge_cmd(
+    source: str = typer.Argument(...),
+    target: str = typer.Argument(...),
+) -> None:
+    """Moves every use of `source` onto `target`, then deletes `source`.
+    Both must already exist. Does not recurse into nested tags — use `rename`
+    for a whole branch."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        try:
+            n = tags_mod.merge(conn, source, target)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+    finally:
+        conn.close()
+    console.print(f"merged '{source}' into '{target}': {n} link(s) moved")
 
 
 @tag_rule_app.command("add")
@@ -1425,6 +1481,23 @@ def projects_list() -> None:
     for r in rows:
         table.add_row(str(r["id"]), r["platform"], r["name"], str(r["convs"]), str(r["docs"]))
     console.print(table)
+
+
+@app.command()
+def screen() -> None:
+    """The tagging screen (Tagging Workflow doc §3) — search, multi-select,
+    click a tag in the tree to apply it to everything selected. Keyboard:
+    / search, t/Enter apply a tag, u untag (tree cursor), z undo, a/n
+    select all/none, Enter on a result reads it (Escape returns), s saves
+    the current filters as a view, q quits."""
+    from chatvault import screen as screen_mod
+
+    config = load_config()
+    conn = connect(config)
+    try:
+        screen_mod.run(conn)
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
