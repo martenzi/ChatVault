@@ -129,6 +129,48 @@ def test_windsurf_legacy_adapter_maps_full_schema_correctly(conn):
     assert tool_call_block["text"] == "pytest tests/test_ingest.py -q"
 
 
+def test_windsurf_legacy_adapter_surfaces_thinking_field(conn):
+    """Regression test for the 2026-08-05 history-r pbwire fix: assistant
+    records can now carry a `thinking` field alongside (or instead of) their
+    final-answer text. An assistant turn with both gets a dedicated
+    `thinking` block ahead of its `text` block (new — this was previously
+    discarded entirely, present only in raw_json). A turn whose only text
+    *is* its thinking trace (no separate final answer) gets one block typed
+    `thinking`, not `text` — no duplication, since there is no separate
+    final-answer content."""
+    path = FIXTURES / "windsurf_legacy" / "thinking_field_sample.jsonl"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 1
+
+    conv = conn.execute("SELECT * FROM conversations").fetchone()
+    assert conv["message_count"] == 5
+
+    messages = conn.execute(
+        "SELECT id, role FROM messages WHERE conv_id = ? ORDER BY idx", (conv["id"],)
+    ).fetchall()
+
+    def blocks_for(msg_id):
+        return conn.execute(
+            "SELECT type, text FROM blocks WHERE msg_id = ? ORDER BY idx", (msg_id,)
+        ).fetchall()
+
+    # idx 1: thinking + final answer -> two blocks, thinking first
+    both_blocks = blocks_for(messages[1]["id"])
+    assert [b["type"] for b in both_blocks] == ["thinking", "text"]
+    assert both_blocks[0]["text"] == "The user wants a plan. I should check the config before proposing anything."
+    assert both_blocks[1]["text"] == "I'll check the config first."
+
+    # idx 2: thinking only, no separate final answer -> one block, typed thinking
+    thinking_only_blocks = blocks_for(messages[2]["id"])
+    assert [b["type"] for b in thinking_only_blocks] == ["thinking"]
+    assert thinking_only_blocks[0]["text"] == "This turn is pure tool-call scaffolding with no separate final answer."
+
+    # idx 4: final answer only, no thinking field at all -> unchanged, single text block
+    plain_blocks = blocks_for(messages[4]["id"])
+    assert [b["type"] for b in plain_blocks] == ["text"]
+    assert plain_blocks[0]["text"] == "You're welcome."
+
+
 def test_cursor_legacy_adapter_bundles_text_and_tool_blocks(conn):
     """One Cursor bubble can carry text AND a tool call at once — both must
     become separate blocks on a single message, not separate messages."""
