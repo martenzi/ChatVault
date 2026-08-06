@@ -163,6 +163,41 @@ def test_status_counts(conn):
     assert data["total"] == 2
     assert data["embedded"] == 1
     assert data["pending"] == 1
+    assert data["unembeddable"] == 0
+    assert data["stale"] == 0
+
+
+def test_status_counts_unembeddable_conversation(conn):
+    cir = make_conversation(
+        platform="synthetic", native_id="o1", title="", project=None,
+        started_at="2026-01-01T00:00:00", ended_at="2026-01-01T00:00:00", source_path="synthetic", raw={},
+        messages=[],
+    )
+    result_load = loader.load_conversation(conn, cir, source_file_id=None)
+    conn.commit()
+    data = embeddings.status(conn)
+    assert data["total"] == 1
+    assert data["embedded"] == 0
+    assert data["pending"] == 0
+    assert data["unembeddable"] == 1
+
+
+def test_status_counts_are_internally_consistent_after_supersede(conn):
+    """embedded + pending + unembeddable must equal total, always — the
+    exact scenario that broke it: dedupe.supersede() leaves an
+    embedding_meta row behind for a conversation that's no longer live."""
+    from chatvault import dedupe
+
+    r1 = _load(conn, "p1", "one", "2026-01-01T00:00:00", text="npm topic")
+    r2 = _load(conn, "p2", "two", "2026-01-02T00:00:00", text="npm topic")
+    embeddings.index_conversations(conn, conv_ids=[r1.conv_id, r2.conv_id])
+
+    dedupe.supersede(conn, r1.uid, r2.uid)
+
+    data = embeddings.status(conn)
+    assert data["embedded"] + data["pending"] + data["unembeddable"] == data["total"]
+    assert data["embedded"] <= data["total"]
+    assert data["stale"] == 1
 
 
 # ─────────────── semantic_search ───────────────

@@ -88,3 +88,45 @@ def test_same_named_project_on_different_platforms_stays_separate_rows(conn):
     assert {r["platform"] for r in rows} == {"claude_web", "chatgpt"}
     # every row from v_projects carries a non-null platform, always
     assert all(r["platform"] for r in rows)
+
+
+def test_convs_count_excludes_superseded_and_excluded_conversations(conn):
+    """The convs column must scope through v_conversations, same as docs
+    already scopes through excluded attachments — a superseded or excluded
+    conversation shouldn't inflate the count a user sees."""
+    from chatvault import curation, dedupe
+    from chatvault.adapters.base import make_block, make_conversation, make_message
+
+    result = loader.load_project(
+        conn,
+        {
+            "platform": "synthetic", "native_id": "proj-1", "name": "Test Project",
+            "description": None, "instructions": None, "created_at": "2026-01-01T00:00:00",
+            "raw": {}, "docs": [],
+        },
+        source_file_id=None,
+    )
+    project_id = result["project_id"]
+
+    def _load(native_id, started_at):
+        cir = make_conversation(
+            platform="synthetic", native_id=native_id, title=native_id, project=None,
+            started_at=started_at, ended_at=started_at, source_path="synthetic", raw={},
+            messages=[make_message(0, "user", None, started_at, [make_block(0, "text", "hi", raw={})], raw={})],
+        )
+        return loader.load_conversation(conn, cir, source_file_id=None)
+
+    r1 = _load("q1", "2026-01-01T00:00:00")
+    r2 = _load("q2", "2026-01-02T00:00:00")
+    r3 = _load("q3", "2026-01-03T00:00:00")
+    conn.execute(
+        "UPDATE conversations SET project_id = ? WHERE id IN (?, ?, ?)",
+        (project_id, r1.conv_id, r2.conv_id, r3.conv_id),
+    )
+    conn.commit()
+
+    dedupe.supersede(conn, r1.uid, r2.uid)
+    curation.exclude(conn, "conversation", f"id = {r3.conv_id}", "test exclusion")
+
+    row = [r for r in projects.list_projects(conn) if r["name"] == "Test Project"][0]
+    assert row["convs"] == 1

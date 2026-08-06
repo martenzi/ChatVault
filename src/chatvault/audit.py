@@ -113,6 +113,9 @@ def _check_structural_integrity(conn: sqlite3.Connection) -> list[CheckResult]:
     ).fetchall()
     results.append(CheckResult("B", "message idx contiguous per conversation", "pass" if not idx_gaps else "fail", f"{len(idx_gaps)} conversation(s) with idx gaps/dupes"))
 
+    # deliberate base-table count: FTS index integrity, not a user-facing
+    # figure, and it must span every row (including excluded/superseded) to
+    # actually verify blocks_fts is in sync with blocks.
     fts_n = conn.execute("SELECT COUNT(*) FROM blocks_fts").fetchone()[0]
     blocks_n = conn.execute("SELECT COUNT(*) FROM blocks").fetchone()[0]
     results.append(CheckResult("B", "FTS index in sync", "pass" if fts_n == blocks_n else "fail", f"blocks_fts={fts_n} vs blocks={blocks_n}"))
@@ -241,6 +244,9 @@ def _check_dedupe_health(conn: sqlite3.Connection) -> list[CheckResult]:
         ORDER BY n DESC LIMIT 20
         """
     ).fetchall()
+    # deliberate base-table count: dedupe_candidates is a workflow queue, not
+    # scoped to live conversations — a candidate referencing an already-
+    # superseded conversation is still a real open/applied/dismissed item.
     candidates = conn.execute("SELECT status, COUNT(*) AS n FROM dedupe_candidates GROUP BY status").fetchall()
 
     results = [

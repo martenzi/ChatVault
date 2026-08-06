@@ -1578,7 +1578,11 @@ def embed(
     try:
         if status:
             data = embeddings_mod.status(conn)
-            console.print(f"embedded: {data['embedded']}  pending: {data['pending']}  total: {data['total']}")
+            console.print(
+                f"embedded: {data['embedded']}  pending: {data['pending']}  "
+                f"unembeddable: {data['unembeddable']}  total: {data['total']}"
+            )
+            console.print(f"[dim]stale (superseded/excluded, safe to ignore): {data['stale']}[/dim]")
             return
 
         result = embeddings_mod.index_conversations(conn, force=force)

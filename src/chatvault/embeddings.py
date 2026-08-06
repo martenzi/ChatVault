@@ -160,9 +160,49 @@ def index_conversations(
 
 
 def status(conn: sqlite3.Connection) -> dict:
+    """Every number is measured directly, never derived by subtraction —
+    `embedded` was previously COUNT(embedding_meta) with no v_conversations
+    join, so a supersede left stale rows that inflated it past `total`, and
+    `pending = max(total - embedded, 0)` silently clamped that inconsistency
+    to zero instead of surfacing it. `missing` conversations (no embedding
+    row) split into `pending` (has representative_text, should be embedded)
+    and `unembeddable` (empty text, e.g. a title-less zero-block
+    conversation — index_conversations() already skips these, so they'd
+    never leave `pending` on their own)."""
     total = conn.execute("SELECT COUNT(*) FROM v_conversations").fetchone()[0]
-    embedded = conn.execute("SELECT COUNT(*) FROM embedding_meta").fetchone()[0]
-    return {"total": total, "embedded": embedded, "pending": max(total - embedded, 0)}
+
+    embedded = conn.execute("SELECT COUNT(*) FROM v_embedding_meta").fetchone()[0]
+
+    missing = conn.execute(
+        """
+        SELECT v.id FROM v_conversations v
+        LEFT JOIN embedding_meta em ON em.conv_id = v.id
+        WHERE em.conv_id IS NULL
+        """
+    ).fetchall()
+    pending = 0
+    unembeddable = 0
+    for row in missing:
+        if representative_text(conn, row["id"]):
+            pending += 1
+        else:
+            unembeddable += 1
+
+    stale = conn.execute(
+        """
+        SELECT COUNT(*) FROM embedding_meta em
+        JOIN conversations c ON c.id = em.conv_id
+        WHERE c.superseded_by IS NOT NULL OR c.excluded = 1
+        """
+    ).fetchone()[0]
+
+    return {
+        "total": total,
+        "embedded": embedded,
+        "pending": pending,
+        "unembeddable": unembeddable,
+        "stale": stale,
+    }
 
 
 def semantic_search(

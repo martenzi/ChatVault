@@ -9,7 +9,7 @@ def list_projects(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute(
         """
         SELECT p.id, p.platform, p.name,
-               (SELECT COUNT(*) FROM conversations c WHERE c.project_id = p.id) AS convs,
+               (SELECT COUNT(*) FROM v_conversations c WHERE c.project_id = p.id) AS convs,
                (SELECT COUNT(*) FROM attachment_links al
                   JOIN attachments a ON a.id = al.attachment_id
                   WHERE al.target_type = 'project' AND al.target_id = p.id AND a.excluded = 0) AS docs
