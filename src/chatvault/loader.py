@@ -103,22 +103,35 @@ def load_project(conn: sqlite3.Connection, project: dict, source_file_id: int | 
     """Upsert a project row (by platform+native_id uid) and link its docs as
     attachments (target_type='project', role='project_knowledge'). Distinct
     from load_conversation: projects aren't conversations and are addressed
-    by their own uid, never content-hashed."""
+    by their own uid, never content-hashed.
+
+    `kind` was hardcoded to 'desktop' here until 2026-08-12 — fine while
+    Claude Desktop's parse_projects() was the only caller, but wrong the
+    moment a second platform-conceptual grouping shows up (Grok's
+    workspace_id-keyed "Projects", conceptually a sibling of Claude
+    Desktop's, not of an editor's filesystem workspace — see
+    grok.py:parse_projects and docs/20_FIX_project_identity.md). Reading
+    `kind` from the adapter's dict, defaulting to 'desktop', keeps every
+    existing caller's behavior byte-identical while letting a new one opt
+    in. No migration needed: migration 010 added `kind` as a plain TEXT
+    column with no CHECK constraint restricting its values."""
     now = datetime.now(timezone.utc).isoformat()
     native_id = project.get("native_id")
     uid = f"{project['platform']}:{native_id}" if native_id else f"{project['platform']}:h:{hashing.attachment_content_hash(project.get('name'))}"
+    kind = project.get("kind") or "desktop"
 
     existing = conn.execute("SELECT id FROM projects WHERE uid = ?", (uid,)).fetchone()
     if existing is not None:
         project_id = existing["id"]
         conn.execute(
-            "UPDATE projects SET name = ?, description = ?, instructions = ?, created_at = ?, raw_json = ?, kind = 'desktop' WHERE id = ?",
+            "UPDATE projects SET name = ?, description = ?, instructions = ?, created_at = ?, raw_json = ?, kind = ? WHERE id = ?",
             (
                 project["name"],
                 project.get("description"),
                 project.get("instructions"),
                 project.get("created_at"),
                 _json(project.get("raw")),
+                kind,
                 project_id,
             ),
         )
@@ -127,7 +140,7 @@ def load_project(conn: sqlite3.Connection, project: dict, source_file_id: int | 
         cur = conn.execute(
             """
             INSERT INTO projects (uid, platform, native_id, name, description, instructions, created_at, raw_json, kind, ingested_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'desktop', ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 uid,
@@ -138,6 +151,7 @@ def load_project(conn: sqlite3.Connection, project: dict, source_file_id: int | 
                 project.get("instructions"),
                 project.get("created_at"),
                 _json(project.get("raw")),
+                kind,
                 now,
             ),
         )

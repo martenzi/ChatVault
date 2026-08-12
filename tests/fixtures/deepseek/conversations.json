@@ -1,0 +1,36 @@
+[
+  {
+    "id": "ds-conv-1",
+    "title": "Test deepseek convo",
+    "inserted_at": "2026-08-01T10:00:00Z",
+    "updated_at": "2026-08-01T10:05:00Z",
+    "mapping": {
+      "root": {"id": "root", "parent": null, "children": ["a"], "message": null},
+      "a": {
+        "id": "a",
+        "parent": "root",
+        "children": ["b"],
+        "message": {
+          "inserted_at": "2026-08-01T10:00:00Z",
+          "model": null,
+          "fragments": [
+            {"type": "REQUEST", "content": "What is a hash prefix continuation check?"}
+          ]
+        }
+      },
+      "b": {
+        "id": "b",
+        "parent": "a",
+        "children": [],
+        "message": {
+          "inserted_at": "2026-08-01T10:05:00Z",
+          "model": "deepseek-v3",
+          "fragments": [
+            {"type": "THINK", "content": "The user is asking about hash comparisons."},
+            {"type": "RESPONSE", "content": "It compares message hashes up to the shorter length."}
+          ]
+        }
+      }
+    }
+  }
+]

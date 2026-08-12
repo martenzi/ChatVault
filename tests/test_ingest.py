@@ -489,3 +489,76 @@ def test_hermes_adapter_ingest_is_idempotent(conn):
     assert summary2.totals == {"inserted": 0, "noop": 0, "superseded": 0, "flagged": 0}
     assert all(f.status == "skipped_dup" for f in summary2.files)
     assert _counts(conn) == first_counts
+
+
+def test_deepseek_adapter_ingests_and_is_not_shadowed_by_chatgpt(conn):
+    """Regression test for the bug where a real DeepSeek export ("mapping" +
+    "fragments") satisfied chatgpt.sniff's old "mapping"-only check and
+    chatgpt won by registry order, silently mislabeling every DeepSeek file."""
+    path = FIXTURES / "deepseek" / "conversations.json"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 1
+    assert summary.files[0].adapter == "deepseek"
+
+    conv = conn.execute("SELECT * FROM conversations").fetchone()
+    assert conv["platform"] == "deepseek"
+    assert conv["native_id"] == "ds-conv-1"
+    assert conv["project"] is None  # verified: no workspace/project concept in DeepSeek's export
+    assert conv["model_primary"] == "deepseek-v3"
+
+    rows = conn.execute(
+        "SELECT role, model FROM messages WHERE conv_id = ? ORDER BY idx", (conv["id"],)
+    ).fetchall()
+    assert [r["role"] for r in rows] == ["user", "assistant"]
+
+    blocks = conn.execute(
+        "SELECT type, text FROM blocks WHERE conv_id = ? ORDER BY id", (conv["id"],)
+    ).fetchall()
+    assert [b["type"] for b in blocks] == ["text", "thinking", "text"]
+
+
+def test_gemini_takeout_adapter_ingests_and_flags_model_unknown(conn):
+    path = FIXTURES / "gemini_takeout" / "MyActivity.json"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 2  # 1 real dialogue + 1 standalone event
+
+    convs = conn.execute("SELECT id, platform, model_primary, title FROM conversations ORDER BY id").fetchall()
+    assert all(c["platform"] == "gemini" for c in convs)
+    assert all(c["model_primary"] is None for c in convs)  # no model field exists anywhere in this export
+
+    tagged = conn.execute(
+        """
+        SELECT c.id FROM conversations c
+        JOIN tag_links tl ON tl.target_type = 'conversation' AND tl.target_id = c.id
+        JOIN tags t ON t.id = tl.tag_id
+        WHERE t.name = 'review/model-unknown'
+        """
+    ).fetchall()
+    assert {r["id"] for r in tagged} == {c["id"] for c in convs}
+
+
+def test_grok_mixed_file_ingests_both_conversations_and_projects(conn):
+    """Regression test for the ingest.py dispatch bug: detect_projects()
+    matching a file used to `continue` past conversation ingestion entirely,
+    which silently dropped every conversation in a file (like Grok's real
+    export) that carries both `conversations` and `projects` in one file."""
+    path = FIXTURES / "grok" / "prod-grok-backend.json"
+    summary = ingest.ingest_path(conn, path)
+
+    # both a conversations-adapter result and a projects result for the same file
+    adapters_seen = {f.adapter for f in summary.files}
+    assert "grok" in adapters_seen
+    assert "grok (projects)" in adapters_seen
+
+    conv = conn.execute("SELECT * FROM conversations").fetchone()
+    assert conv is not None
+    assert conv["platform"] == "grok"
+    assert conv["native_id"] == "grok-conv-1"
+    assert conv["project"] == "ws-1"
+    assert conv["model_primary"] == "grok-4"
+
+    project = conn.execute("SELECT * FROM projects").fetchone()
+    assert project is not None
+    assert project["kind"] == "grok_project"
+    assert project["native_id"] == "ws-1"
+    assert project["name"] == "job-hunter"

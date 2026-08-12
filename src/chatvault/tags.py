@@ -274,6 +274,56 @@ def apply_rules(conn: sqlite3.Connection, conv_ids: list[int] | None = None) -> 
     return applied
 
 
+def flag_model_unknown(conn: sqlite3.Connection, conv_ids: list[int]) -> int:
+    """Applies review/model-unknown (spec'd in docs/10_CONCEPTS_label_tag_
+    project.md §9 but never actually wired up) to conversations whose model
+    could not be recovered at all — currently only gemini_takeout, which has
+    no `model` field anywhere in its export (verified against every record
+    in a real 2,071-record file, not sampled).
+
+    This is a plain per-conversation attribute check (model_primary IS
+    NULL), not a content pattern, so it doesn't go through the generic
+    tag_rules engine (chatvault.tags.apply_rules), which matches against a
+    conversation's *blocks* — same reasoning as projects.py's
+    review/project-* tags, which are also attribute-level flags applied by
+    dedicated code rather than a blocks-based rule.
+
+    Scoped to platform='gemini' deliberately, not every platform with
+    model_primary IS NULL: claude_web's export has no model field either,
+    but that's true of every claude_web conversation ever ingested, not an
+    exception worth a human's attention — flagging all of them would make
+    the tag noise, not a review queue. Gemini is the platform this was
+    actually built for (its own design doc calls it out explicitly); widen
+    this if another platform is later confirmed to have the same
+    "sometimes recoverable, sometimes not" shape windsurf_legacy had."""
+    if not conv_ids:
+        return 0
+    placeholders = ",".join("?" * len(conv_ids))
+    rows = conn.execute(
+        f"SELECT id FROM conversations WHERE model_primary IS NULL AND platform = 'gemini' AND id IN ({placeholders})",  # noqa: S608
+        conv_ids,
+    ).fetchall()
+    if not rows:
+        return 0
+
+    tag_id = _get_or_create_tag(conn, "review/model-unknown")
+    now = _now()
+    applied = 0
+    for row in rows:
+        cur = conn.execute(
+            """
+            INSERT INTO tag_links (tag_id, target_type, target_id, source, created_at)
+            VALUES (?, 'conversation', ?, 'rule', ?)
+            ON CONFLICT(tag_id, target_type, target_id) DO NOTHING
+            """,
+            (tag_id, row["id"], now),
+        )
+        if cur.rowcount:
+            applied += 1
+    conn.commit()
+    return applied
+
+
 # ─────────────── tag import-tree from YAML (Tagging Workflow §2, §8 item 1) ───────────────
 
 

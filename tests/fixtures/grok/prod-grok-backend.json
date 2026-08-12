@@ -1,0 +1,45 @@
+{
+  "conversations": [
+    {
+      "conversation": {
+        "id": "grok-conv-1",
+        "title": "Test grok convo",
+        "workspace_id": "ws-1",
+        "leaf_response_id": "does-not-resolve",
+        "create_time": {"$date": {"$numberLong": "1770000000000"}},
+        "modify_time": {"$date": {"$numberLong": "1770000100000"}}
+      },
+      "responses": [
+        {
+          "response": {
+            "_id": "r1",
+            "parent_response_id": null,
+            "sender": "human",
+            "message": "What model are you?",
+            "create_time": {"$date": {"$numberLong": "1770000000000"}}
+          }
+        },
+        {
+          "response": {
+            "_id": "r2",
+            "parent_response_id": "r1",
+            "sender": "ASSISTANT",
+            "message": "I'm Grok.",
+            "model": "grok-4",
+            "create_time": {"$date": {"$numberLong": "1770000050000"}}
+          }
+        }
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "workspace_id": "ws-1",
+      "name": "job-hunter",
+      "custom_personality": "helps with job search",
+      "create_time": {"$date": {"$numberLong": "1769999000000"}}
+    }
+  ],
+  "tasks": [],
+  "media_posts": []
+}

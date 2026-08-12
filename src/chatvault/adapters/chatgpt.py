@@ -24,7 +24,13 @@ def sniff(path: Path) -> bool:
             prefix = fh.read(65536)
     except OSError:
         return False
-    return b'"mapping"' in prefix
+    # "mapping" alone is not exclusive to ChatGPT — DeepSeek's export is also
+    # a node-map tree and satisfies this same prefix check (confirmed against
+    # a real DeepSeek export, which has both "mapping" and "fragments"; see
+    # deepseek.py). Reject explicitly rather than relying on registry order,
+    # so this stays correct regardless of where either adapter sits in
+    # adapters._REGISTRY.
+    return b'"mapping"' in prefix and b'"fragments"' not in prefix
 
 
 def _epoch_to_iso(value) -> str | None:

@@ -18,7 +18,10 @@ def register_late_adapters() -> None:
         chatgpt_legacy_recovered,
         cursor_legacy,
         cursor_legacy_copilot,
+        deepseek,
+        gemini_takeout,
         generic_jsonl,
+        grok,
         hermes,
         openclaw,
         vscode_legacy,
@@ -26,9 +29,16 @@ def register_late_adapters() -> None:
     )
 
     # chatgpt (official mapping/current_node export) before
-    # chatgpt_legacy_recovered (DOM-scraped, no "mapping" key) — order
-    # matters only if a file could satisfy both sniffs, which it can't
-    # (disjoint required keys), but keep the more authoritative source first.
+    # chatgpt_legacy_recovered (DOM-scraped, no "mapping" key). chatgpt.sniff
+    # explicitly rejects files containing "fragments" (DeepSeek's shape) so
+    # it stays exclusive regardless of registry order — a real DeepSeek
+    # export was found to satisfy chatgpt's old "mapping"-only sniff too
+    # (both are node-map trees), which silently mislabeled every DeepSeek
+    # file as chatgpt until that check was tightened. Don't assume any two
+    # adapters' sniffs are disjoint from a code comment alone — the registry
+    # order here was never actually validated against real files until this
+    # bug was found; see tests/test_adapter_registry.py for the sweep that
+    # now checks every pair against the real corpus and fixtures.
     _REGISTRY.setdefault("chatgpt", chatgpt)
     _REGISTRY.setdefault("chatgpt_legacy_recovered", chatgpt_legacy_recovered)
     _REGISTRY.setdefault("windsurf_legacy", windsurf_legacy)
@@ -37,6 +47,17 @@ def register_late_adapters() -> None:
     _REGISTRY.setdefault("cursor_legacy_copilot", cursor_legacy_copilot)
     _REGISTRY.setdefault("openclaw", openclaw)
     _REGISTRY.setdefault("hermes", hermes)
+    # deepseek: "mapping" + "fragments" together. chatgpt.sniff now excludes
+    # "fragments" explicitly, so this pair is safe in either registry order.
+    _REGISTRY.setdefault("deepseek", deepseek)
+    # grok: "leaf_response_id" + "parent_response_id" — verified empirically
+    # against the full real raw/ corpus (see test_adapter_registry.py) to be
+    # the only adapter matching Grok's export.
+    _REGISTRY.setdefault("grok", grok)
+    # gemini_takeout: "Gemini Apps" + "activityControls" + "safeHtmlItem"
+    # together — a Google Takeout "My Activity" export, verified empirically
+    # to be the only adapter matching this shape.
+    _REGISTRY.setdefault("gemini_takeout", gemini_takeout)
     # Deliberately last: permissive fallback, must not shadow specific adapters.
     _REGISTRY.setdefault("generic_jsonl", generic_jsonl)
 

@@ -83,10 +83,17 @@ def _ingest_projects_file(
     project rows refreshed — mirrors the conversation counters' meaning
     closely enough for the shared ingest summary table."""
     adapter_label = f"{mod.name} (projects)"
+    projects_adapter = f"{mod.name}_projects"
     now = datetime.now(timezone.utc).isoformat()
     sha = hashing.file_sha256(file_path)
 
-    existing = conn.execute("SELECT id, status FROM source_files WHERE sha256 = ?", (sha,)).fetchone()
+    # Scoped by (sha256, adapter), not sha256 alone: a file that is BOTH a
+    # projects export and a conversations export (Grok's real export is)
+    # gets one source_files row per purpose, so this dedup check must not
+    # see the conversations-half row and mistake it for "already done."
+    existing = conn.execute(
+        "SELECT id, status FROM source_files WHERE sha256 = ? AND adapter = ?", (sha, projects_adapter)
+    ).fetchone()
     if existing is not None and existing["status"] == "ok":
         if not dry_run:
             conn.execute("UPDATE source_files SET last_seen_at = ? WHERE id = ?", (now, existing["id"]))
@@ -107,12 +114,12 @@ def _ingest_projects_file(
             """
             INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, error, kind, last_seen_at, root_dir, first_seen_at)
             VALUES (?, ?, ?, ?, ?, ?, 'failed', ?, 'frozen', ?, ?, ?)
-            ON CONFLICT(sha256) DO UPDATE SET
+            ON CONFLICT(sha256, adapter) DO UPDATE SET
                 status='failed', error=excluded.error, ingested_at=excluded.ingested_at,
                 last_seen_at=excluded.last_seen_at, root_dir=excluded.root_dir,
                 first_seen_at=COALESCE(source_files.first_seen_at, excluded.first_seen_at)
             """,
-            (str(file_path), sha, mod.platform, f"{mod.name}_projects", file_path.stat().st_size, now, str(exc), now, root_dir, now),
+            (str(file_path), sha, mod.platform, projects_adapter, file_path.stat().st_size, now, str(exc), now, root_dir, now),
         )
         conn.commit()
         return FileIngestResult(file_path, "failed", adapter=adapter_label, error=str(exc))
@@ -121,15 +128,15 @@ def _ingest_projects_file(
         """
         INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, kind, last_seen_at, root_dir, first_seen_at)
         VALUES (?, ?, ?, ?, ?, ?, 'ok', 'frozen', ?, ?, ?)
-        ON CONFLICT(sha256) DO UPDATE SET
+        ON CONFLICT(sha256, adapter) DO UPDATE SET
             status='ok', error=NULL, ingested_at=excluded.ingested_at,
             last_seen_at=excluded.last_seen_at, root_dir=excluded.root_dir,
             first_seen_at=COALESCE(source_files.first_seen_at, excluded.first_seen_at)
         """,
-        (str(file_path), sha, mod.platform, f"{mod.name}_projects", file_path.stat().st_size, now, now, root_dir, now),
+        (str(file_path), sha, mod.platform, projects_adapter, file_path.stat().st_size, now, now, root_dir, now),
     )
     source_file_id = cur.lastrowid or conn.execute(
-        "SELECT id FROM source_files WHERE sha256 = ?", (sha,)
+        "SELECT id FROM source_files WHERE sha256 = ? AND adapter = ?", (sha, projects_adapter)
     ).fetchone()["id"]
 
     result = FileIngestResult(file_path, "ok", adapter=adapter_label)
@@ -176,22 +183,38 @@ def ingest_path(
     touched_conv_ids: list[int] = []
 
     for file_path in _iter_candidate_files(path, exclude_dir):
+        # A file's project data and its conversation data are independent
+        # questions, not an either/or branch. Most sources keep them in
+        # separate files (Claude's projects.json vs its conversations
+        # export), but Grok's real export carries both "conversations" and
+        # "projects" in the SAME file — a file that used to short-circuit
+        # here via `continue` the moment detect_projects() matched, silently
+        # dropping all 599 of its conversations. Check both independently
+        # and ingest whichever are present.
+        matched_projects = False
         if adapter_name is None:
             projects_mod = adapters.detect_projects(file_path)
             if projects_mod is not None:
                 summary.files.append(
                     _ingest_projects_file(conn, file_path, projects_mod, root_dir, dry_run=dry_run)
                 )
-                continue
+                matched_projects = True
 
         mod = adapters.get(adapter_name) if adapter_name else adapters.detect(file_path)
         if mod is None:
-            summary.files.append(FileIngestResult(file_path, "skipped_no_adapter"))
+            # Only a "no adapter" result if the file also had no project
+            # data — a pure projects file (mod is legitimately None here)
+            # already got its result appended above.
+            if not matched_projects:
+                summary.files.append(FileIngestResult(file_path, "skipped_no_adapter"))
             continue
 
         sha = hashing.file_sha256(file_path)
+        # Scoped by (sha256, adapter): see the matching comment in
+        # _ingest_projects_file — a dual-purpose file's projects-half row
+        # must not shadow this conversations-half check.
         existing = conn.execute(
-            "SELECT id, status FROM source_files WHERE sha256 = ?", (sha,)
+            "SELECT id, status FROM source_files WHERE sha256 = ? AND adapter = ?", (sha, mod.name)
         ).fetchone()
         if existing is not None and existing["status"] == "ok" and not reprocess:
             if not dry_run:
@@ -220,7 +243,7 @@ def ingest_path(
                 """
                 INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, error, kind, last_seen_at, root_dir, first_seen_at)
                 VALUES (?, ?, ?, ?, ?, ?, 'failed', ?, 'frozen', ?, ?, ?)
-                ON CONFLICT(sha256) DO UPDATE SET
+                ON CONFLICT(sha256, adapter) DO UPDATE SET
                     status='failed', error=excluded.error, ingested_at=excluded.ingested_at,
                     last_seen_at=excluded.last_seen_at, root_dir=excluded.root_dir,
                     first_seen_at=COALESCE(source_files.first_seen_at, excluded.first_seen_at)
@@ -235,7 +258,7 @@ def ingest_path(
             """
             INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, kind, last_seen_at, root_dir, first_seen_at)
             VALUES (?, ?, ?, ?, ?, ?, 'ok', 'frozen', ?, ?, ?)
-            ON CONFLICT(sha256) DO UPDATE SET
+            ON CONFLICT(sha256, adapter) DO UPDATE SET
                 status='ok', error=NULL, ingested_at=excluded.ingested_at,
                 last_seen_at=excluded.last_seen_at, root_dir=excluded.root_dir,
                 first_seen_at=COALESCE(source_files.first_seen_at, excluded.first_seen_at)
@@ -243,7 +266,7 @@ def ingest_path(
             (str(file_path), sha, mod.platform, mod.name, file_path.stat().st_size, now, now, root_dir, now),
         )
         source_file_id = cur.lastrowid or conn.execute(
-            "SELECT id FROM source_files WHERE sha256 = ?", (sha,)
+            "SELECT id FROM source_files WHERE sha256 = ? AND adapter = ?", (sha, mod.name)
         ).fetchone()["id"]
 
         result = FileIngestResult(file_path, "ok", adapter=mod.name)
@@ -271,6 +294,7 @@ def ingest_path(
             from chatvault import tags as tags_mod
 
             tags_mod.apply_rules(conn, conv_ids=touched_conv_ids)
+            tags_mod.flag_model_unknown(conn, touched_conv_ids)
 
             if embed:
                 from chatvault import embeddings as embeddings_mod
