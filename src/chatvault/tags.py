@@ -31,43 +31,6 @@ get_or_create_tag = _get_or_create_tag
 now = _now
 
 
-@dataclass
-class TagTreeNode:
-    name: str  # this segment only, e.g. 'macos'
-    path: str  # full dotted... slashed path, e.g. 'tech/macos'
-    uses: int = 0
-    children: dict = field(default_factory=dict)  # name -> TagTreeNode
-
-
-def build_tag_tree(conn: sqlite3.Connection) -> dict:
-    """Every tag in the DB, nested into a tree by its '/'-delimited segments,
-    for the tagging screen's clickable tree pane. Intermediate segments that
-    have no tag row of their own (e.g. 'tech' when only 'tech/macos/npm'
-    exists) still appear, as pure navigation nodes with uses=0."""
-    rows = conn.execute(
-        """
-        SELECT t.name AS name, COUNT(tl.tag_id) AS uses
-        FROM tags t LEFT JOIN tag_links tl ON tl.tag_id = t.id
-        GROUP BY t.id ORDER BY t.name
-        """
-    ).fetchall()
-
-    roots: dict = {}
-    for row in rows:
-        parts = row["name"].split("/")
-        level = roots
-        path = ""
-        for i, part in enumerate(parts):
-            path = f"{path}/{part}" if path else part
-            if part not in level:
-                level[part] = TagTreeNode(name=part, path=path)
-            node = level[part]
-            if i == len(parts) - 1:
-                node.uses = row["uses"]
-            level = node.children
-    return roots
-
-
 # ─────────────── hierarchical tag queries (spec §2, §9 item 2) ───────────────
 # A trailing "/**" or "/*" means "this tag or anything nested under it, at any
 # depth" — the naming convention (slash-delimited segments) already implies
@@ -380,6 +343,117 @@ def rename(conn: sqlite3.Connection, old_name: str, new_name: str) -> int:
 
     conn.commit()
     return renamed
+
+
+# ─────────────── tag browsing (docs/FIX_tag_browsing_ux.md) ───────────────
+# `find --tag` searches conversations, narrowed by a tag one filter among
+# several. These are the other verb: inspecting the tag vocabulary itself —
+# the tree, a subtree's conversations, and the tagging backlog at a glance.
+
+
+@dataclass
+class TagBrowseNode:
+    name: str    # this segment only, e.g. 'macos'
+    path: str    # full path, e.g. 'tech/macos'
+    own: int = 0  # distinct conversations tagged with this exact tag
+    children: dict = field(default_factory=dict)  # name -> TagBrowseNode
+
+
+def _strip_wildcard(pattern: str) -> str:
+    for suffix in ("/**", "/*"):
+        if pattern.endswith(suffix):
+            return pattern[: -len(suffix)]
+    return pattern
+
+
+def cumulative_count(node: TagBrowseNode) -> int:
+    """Sum of this tag's own conversation count plus everything nested
+    beneath it — additive, not deduplicated across siblings (a conversation
+    tagged under two different children counts under each)."""
+    return node.own + sum(cumulative_count(child) for child in node.children.values())
+
+
+def tag_tree(conn: sqlite3.Connection, pattern: str | None = None) -> dict[str, TagBrowseNode]:
+    """Every tag, nested into a tree by its '/'-delimited segments, with each
+    node's own distinct-conversation count. `pattern` (e.g. 'tech/**')
+    restricts to one subtree. Intermediate segments with no tag row of their
+    own still appear, as pure navigation nodes with own=0."""
+    # v_conversations, never the base table (docs/21_FIX_scope_consistency.md):
+    # a tag_link pointing at a superseded/excluded conversation must not
+    # inflate the count shown here, or disagree with what `tag show`
+    # actually lists (which is scoped through find()'s own v_conversations
+    # join).
+    rows = conn.execute(
+        """
+        SELECT t.name AS name,
+               COUNT(DISTINCT CASE
+                 WHEN tl.target_type = 'conversation' AND vc.id IS NOT NULL THEN tl.target_id
+               END) AS own
+        FROM tags t
+        LEFT JOIN tag_links tl ON tl.tag_id = t.id
+        LEFT JOIN v_conversations vc ON tl.target_type = 'conversation' AND vc.id = tl.target_id
+        GROUP BY t.id ORDER BY t.name
+        """
+    ).fetchall()
+
+    if pattern:
+        prefix = _strip_wildcard(pattern)
+        rows = [r for r in rows if r["name"] == prefix or r["name"].startswith(prefix + "/")]
+
+    roots: dict[str, TagBrowseNode] = {}
+    for row in rows:
+        parts = row["name"].split("/")
+        level = roots
+        path = ""
+        for i, part in enumerate(parts):
+            path = f"{path}/{part}" if path else part
+            if part not in level:
+                level[part] = TagBrowseNode(name=part, path=path)
+            node = level[part]
+            if i == len(parts) - 1:
+                node.own = row["own"]
+            level = node.children
+    return roots
+
+
+def stats(conn: sqlite3.Connection) -> dict:
+    """The tagging backlog at a glance: total tags, distinct tagged
+    conversations, untagged conversations, and tags nobody has used yet."""
+    total_tags = conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
+    tagged_convs = conn.execute(
+        """
+        SELECT COUNT(DISTINCT tl.target_id) FROM tag_links tl
+        JOIN v_conversations vc ON vc.id = tl.target_id
+        WHERE tl.target_type = 'conversation'
+        """
+    ).fetchone()[0]
+    total_convs = conn.execute("SELECT COUNT(*) FROM v_conversations").fetchone()[0]
+    zero_use_tags = conn.execute(
+        """
+        SELECT COUNT(*) FROM tags t
+        WHERE NOT EXISTS (
+            SELECT 1 FROM tag_links tl
+            LEFT JOIN v_conversations vc ON tl.target_type = 'conversation' AND vc.id = tl.target_id
+            WHERE tl.tag_id = t.id AND (tl.target_type != 'conversation' OR vc.id IS NOT NULL)
+        )
+        """
+    ).fetchone()[0]
+    return {
+        "total_tags": total_tags,
+        "tagged_convs": tagged_convs,
+        "untagged_convs": total_convs - tagged_convs,
+        "zero_use_tags": zero_use_tags,
+    }
+
+
+def show_query(name: str, exact: bool = False, include_children: bool = True) -> str:
+    """The tag-match expression `tag show <name>` should search on — bare
+    `name` for --exact, otherwise `name` (or `name/**` if it isn't already a
+    wildcard) so it covers everything nested beneath, same convention as
+    `find --tag`."""
+    if exact or not include_children:
+        return name
+    return name if name.endswith(("/**", "/*")) else f"{name}/**"
 
 
 def merge(conn: sqlite3.Connection, source_name: str, target_name: str) -> int:

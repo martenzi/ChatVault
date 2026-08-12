@@ -160,6 +160,30 @@ def _check_metadata_coverage(conn: sqlite3.Connection, platform: str | None) -> 
     pct = _pct(null_started, total_convs)
     results.append(CheckResult("C", "conversations with started_at", "warn" if pct > 5 else "pass", f"{pct:.1f}% NULL started_at ({null_started}/{total_convs})"))
 
+    # DATASETTE_AND_VIEWS_GUIDE.md §3: six different started_at formats exist
+    # across adapters; the harmless variance is 'T' vs ' ' and Z vs
+    # '+00:00' (both sort fine). A missing timezone marker entirely is
+    # genuinely ambiguous, so it's flagged here rather than silently sorted
+    # alongside timestamps that do carry one. The stored value itself is
+    # never touched — this only ever reports.
+    no_tz = conn.execute(
+        f"""
+        SELECT uid, title, started_at FROM v_conversations c
+        WHERE c.started_at IS NOT NULL AND c.started_at NOT LIKE '%Z' AND c.started_at NOT LIKE '%+%'
+        {platform_clause}
+        """,  # noqa: S608
+        params,
+    ).fetchall()
+    pct = _pct(len(no_tz), total_convs)
+    results.append(
+        CheckResult(
+            "C", "started_at carries a timezone marker", "warn" if no_tz else "pass",
+            f"{len(no_tz)} conversation(s) ({pct:.1f}%) with started_at missing a timezone marker (no 'Z' or '+offset')"
+            + (": " + ", ".join(r["uid"] for r in no_tz[:5]) + (" ..." if len(no_tz) > 5 else "") if no_tz else ""),
+            data={"uids": [r["uid"] for r in no_tz]},
+        )
+    )
+
     return results
 
 

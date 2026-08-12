@@ -414,6 +414,31 @@ def audit(
     raise typer.Exit(code=audit_mod.exit_code(report, strict=strict))
 
 
+def _render_find_table(title: str, rows: list, total: int) -> None:
+    from rich.markup import escape
+
+    table = Table(title=title)
+    table.add_column("#", justify="right")
+    table.add_column("date")
+    table.add_column("platform")
+    table.add_column("project")
+    table.add_column("title")
+    table.add_column("msgs", justify="right")
+    table.add_column("📎", justify="right")
+    for i, r in enumerate(rows, start=1):
+        table.add_row(
+            str(i),
+            (r["started_at"] or "")[:10] or "-",
+            r["platform"],
+            escape(r["project"]) if r["project"] else "—",
+            escape(r["title"]) if r["title"] else "Untitled",
+            str(r["message_count"]),
+            str(r["attachment_count"]) if r["attachment_count"] else "",
+        )
+    console.print(table)
+    console.print(f"showing {len(rows)} of {total} matches · saved as last query")
+
+
 @app.command()
 def find(
     query: str = typer.Argument(None, help="Free text. Titles match first, body text (FTS) second. Omit for most recent."),
@@ -449,26 +474,7 @@ def find(
     finally:
         conn.close()
 
-    table = Table(title=f"find: {query!r}" if query else "find: most recent")
-    table.add_column("#", justify="right")
-    table.add_column("date")
-    table.add_column("platform")
-    table.add_column("project")
-    table.add_column("title")
-    table.add_column("msgs", justify="right")
-    table.add_column("📎", justify="right")
-    for i, r in enumerate(rows, start=1):
-        table.add_row(
-            str(i),
-            (r["started_at"] or "")[:10] or "-",
-            r["platform"],
-            r["project"] or "—",
-            r["title"] or "Untitled",
-            str(r["message_count"]),
-            str(r["attachment_count"]) if r["attachment_count"] else "",
-        )
-    console.print(table)
-    console.print(f"showing {len(rows)} of {total} matches · saved as last query")
+    _render_find_table(f"find: {query!r}" if query else "find: most recent", rows, total)
 
 
 def _interactive_pick(conn):
@@ -642,6 +648,101 @@ def tag_list() -> None:
     for r in rows:
         table.add_row(r["name"], str(r["uses"]))
     console.print(table)
+
+
+@tag_app.command("tree")
+def tag_tree_cmd(
+    pattern: str = typer.Argument(None, help="e.g. 'tech/**' to show one subtree. Omit for the whole tree."),
+) -> None:
+    """Browse the tag vocabulary as a hierarchy with cumulative counts —
+    'inspecting a structure you built', not searching. Use `find --tag` when
+    a tag is one filter among several instead."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        roots = tags_mod.tag_tree(conn, pattern)
+        info = tags_mod.stats(conn)
+    finally:
+        conn.close()
+
+    if not roots:
+        console.print("[dim]no tags[/dim]" if not pattern else f"[dim]no tags under {pattern!r}[/dim]")
+        return
+
+    from rich.markup import escape
+    from rich.tree import Tree
+
+    def add_children(rich_node, nodes: dict) -> None:
+        for name in sorted(nodes):
+            node = nodes[name]
+            count = tags_mod.cumulative_count(node)
+            branch = rich_node.add(f"{escape(node.name)}  [dim]{count}[/dim]")
+            add_children(branch, node.children)
+
+    root_tree = Tree(pattern or "tags")
+    add_children(root_tree, roots)
+    console.print(root_tree)
+    console.print(
+        f"{info['total_tags']} tags · {info['tagged_convs']} tagged · {info['untagged_convs']} untagged"
+    )
+
+
+@tag_app.command("show")
+def tag_show_cmd(
+    name: str = typer.Argument(...),
+    exact: bool = typer.Option(False, "--exact", help="Only this exact tag, not everything nested under it."),
+    include_children: bool = typer.Option(True, "--include-children/--no-include-children", help="Default true: covers everything nested under `name` too."),
+    limit: int = typer.Option(200, "--limit"),
+) -> None:
+    """Drill into a tag — the conversations carrying it. Same engine, output,
+    and --pick cache as `find --tag`, just the right verb for browsing."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        tag_query = tags_mod.show_query(name, exact=exact, include_children=include_children)
+        rows, total = browse_mod.find(conn, tag=tag_query, limit=limit, sort="recent")
+        browse_mod.save_result_cache(
+            conn, config, rows,
+            {"query": None, "platform": None, "since": None, "before": None,
+             "project": None, "tag": tag_query, "has_attachments": False, "untagged": False,
+             "limit": limit, "sort": "recent"},
+        )
+    finally:
+        conn.close()
+    _render_find_table(f"tag show: {name}", rows, total)
+
+
+@tag_app.command("review")
+def tag_review_cmd(limit: int = typer.Option(200, "--limit")) -> None:
+    """Shorthand for `tag show 'review/**'` — the anomalies worth checking
+    regularly, without spelling out a glob."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        rows, total = browse_mod.find(conn, tag="review/**", limit=limit, sort="recent")
+        browse_mod.save_result_cache(
+            conn, config, rows,
+            {"query": None, "platform": None, "since": None, "before": None,
+             "project": None, "tag": "review/**", "has_attachments": False, "untagged": False,
+             "limit": limit, "sort": "recent"},
+        )
+    finally:
+        conn.close()
+    _render_find_table("tag review", rows, total)
+
+
+@tag_app.command("stats")
+def tag_stats_cmd() -> None:
+    """The tagging backlog at a glance: tag count, tagged/untagged
+    conversations, and tags nobody has used yet."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        info = tags_mod.stats(conn)
+    finally:
+        conn.close()
+    console.print(f"tags: {info['total_tags']}  (unused: {info['zero_use_tags']})")
+    console.print(f"conversations tagged: {info['tagged_convs']}  untagged: {info['untagged_convs']}")
 
 
 @tag_app.command("untag")
@@ -1536,15 +1637,132 @@ def projects_list() -> None:
         rows = projects_mod.list_projects(conn)
     finally:
         conn.close()
+    from rich.markup import escape
+
     table = Table(title="projects")
     table.add_column("id")
     table.add_column("platform")
+    table.add_column("kind")
     table.add_column("project")
     table.add_column("convs", justify="right")
     table.add_column("docs", justify="right")
+    table.add_column("path")
     for r in rows:
-        table.add_row(str(r["id"]), r["platform"], r["name"], str(r["convs"]), str(r["docs"]))
+        name = f"[yellow]⚠ {escape(r['name'])}[/yellow]" if r["ambiguous"] else escape(r["name"])
+        table.add_row(
+            str(r["id"]), r["platform"], r["kind"], name, str(r["convs"]), str(r["docs"]),
+            escape(r["path"]) if r["path"] else "—",
+        )
     console.print(table)
+
+
+@projects_app.command("backfill")
+def projects_backfill() -> None:
+    """Promote `conversations.project` labels into real `projects` rows,
+    keyed on normalised workspace path (docs/FIX_project_identity.md).
+    Idempotent — safe to re-run after every ingest."""
+    config = load_config()
+    _auto_backup(config, "pre-project-identity")
+    conn = connect(config)
+    try:
+        report = projects_mod.backfill(conn)
+    finally:
+        conn.close()
+    console.print(
+        f"resolved={report.resolved} scratch={report.scratch} unresolved={report.unresolved} "
+        f"guessed_unresolved={report.guessed_unresolved} "
+        f"projects_created={report.projects_created} ambiguous_projects={report.ambiguous_projects}"
+    )
+    if report.unresolved:
+        console.print("[yellow]some conversations had no determinable workspace — tagged review/project-unresolved[/yellow]")
+    if report.guessed_unresolved:
+        console.print(f"[yellow]{report.guessed_unresolved} conversation(s) had a file-like project guess with no project root found on disk — tagged review/project-guessed[/yellow]")
+    if report.ambiguous_projects:
+        console.print(f"[yellow]{report.ambiguous_projects} project name(s) collide across different paths — see `chatvault projects review`[/yellow]")
+
+
+@projects_app.command("show")
+def projects_show(name: str = typer.Argument(...)) -> None:
+    config = load_config()
+    conn = connect(config)
+    try:
+        rows = [r for r in projects_mod.list_projects(conn) if r["name"] == name]
+    finally:
+        conn.close()
+    if not rows:
+        console.print(f"[yellow]no project named {name!r}[/yellow]")
+        raise typer.Exit(code=1)
+    from rich.markup import escape
+
+    table = Table(title=f"project: {escape(name)}")
+    table.add_column("id")
+    table.add_column("platform")
+    table.add_column("kind")
+    table.add_column("convs", justify="right")
+    table.add_column("path")
+    for r in rows:
+        table.add_row(str(r["id"]), r["platform"], r["kind"], str(r["convs"]), escape(r["path"]) if r["path"] else "—")
+    console.print(table)
+
+
+@projects_app.command("review")
+def projects_review() -> None:
+    """Everything flagged: ambiguous names (same name, different path) and
+    scratch buckets ('(no workspace)'). Flagged, never silently resolved."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        rows = projects_mod.review(conn)
+    finally:
+        conn.close()
+    if not rows:
+        console.print("[dim]nothing flagged[/dim]")
+        return
+    from rich.markup import escape
+
+    table = Table(title="projects review")
+    table.add_column("id")
+    table.add_column("platform")
+    table.add_column("kind")
+    table.add_column("project")
+    table.add_column("convs", justify="right")
+    table.add_column("path")
+    for r in rows:
+        flag = "⚠ " if r["ambiguous"] else ""
+        table.add_row(str(r["id"]), r["platform"], r["kind"], f"{flag}{escape(r['name'])}", str(r["convs"]), escape(r["path"]) if r["path"] else "—")
+    console.print(table)
+
+
+@projects_app.command("merge")
+def projects_merge_cmd(source_id: int = typer.Argument(...), target_id: int = typer.Argument(...)) -> None:
+    """Moves every conversation from `source_id` onto `target_id`, then
+    deletes the source project row. Your decision — never automatic."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        try:
+            n = projects_mod.merge(conn, source_id, target_id)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+    finally:
+        conn.close()
+    console.print(f"merged project {source_id} into {target_id}: {n} conversation(s) moved")
+
+
+@projects_app.command("rename")
+def projects_rename_cmd(project_id: int = typer.Argument(...), new_name: str = typer.Argument(...)) -> None:
+    config = load_config()
+    conn = connect(config)
+    try:
+        try:
+            projects_mod.rename(conn, project_id, new_name)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+    finally:
+        conn.close()
+    console.print(f"renamed project {project_id} -> {new_name!r}")
 
 
 @app.command()

@@ -112,7 +112,7 @@ def load_project(conn: sqlite3.Connection, project: dict, source_file_id: int | 
     if existing is not None:
         project_id = existing["id"]
         conn.execute(
-            "UPDATE projects SET name = ?, description = ?, instructions = ?, created_at = ?, raw_json = ? WHERE id = ?",
+            "UPDATE projects SET name = ?, description = ?, instructions = ?, created_at = ?, raw_json = ?, kind = 'desktop' WHERE id = ?",
             (
                 project["name"],
                 project.get("description"),
@@ -126,8 +126,8 @@ def load_project(conn: sqlite3.Connection, project: dict, source_file_id: int | 
     else:
         cur = conn.execute(
             """
-            INSERT INTO projects (uid, platform, native_id, name, description, instructions, created_at, raw_json, ingested_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO projects (uid, platform, native_id, name, description, instructions, created_at, raw_json, kind, ingested_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'desktop', ?)
             """,
             (
                 uid,

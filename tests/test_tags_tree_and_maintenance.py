@@ -26,6 +26,28 @@ purpose: [troubleshooting, learning]
 """
 
 
+# ─────────────── tag browsing counts (docs/21_FIX_scope_consistency.md) ───────────────
+
+
+def test_tag_tree_excludes_superseded_conversations(conn):
+    """own-count must scope through v_conversations, same bug class as
+    embed --status and projects list — a tag_link on a superseded duplicate
+    must not inflate the count `tag tree`/`tag stats` show, or disagree with
+    what `tag show` actually lists."""
+    from chatvault import dedupe
+
+    old = _load(conn, "sup1", "conv", "2026-01-01T00:00:00")
+    new = _load(conn, "sup2", "conv", "2026-01-02T00:00:00")
+    tags.tag_add(conn, "tech/ai", f"id IN ({old.conv_id}, {new.conv_id})")
+    dedupe.supersede(conn, old.uid, new.uid)
+
+    roots = tags.tag_tree(conn)
+    assert tags.cumulative_count(roots["tech"].children["ai"]) == 1
+
+    info = tags.stats(conn)
+    assert info["tagged_convs"] == 1
+
+
 # ─────────────── tag import-tree from YAML ───────────────
 
 

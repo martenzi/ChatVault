@@ -239,4 +239,7 @@ class ScreenState:
     # ─────────────── tag tree, for the tags pane ───────────────
 
     def tag_tree(self) -> dict:
-        return tags_mod.build_tag_tree(self.conn)
+        """docs/22_FIX_tag_browsing_ux.md: the tree panel shows the same
+        cumulative, v_conversations-scoped counts as `chatvault tag tree`,
+        not build_tag_tree()'s per-node link count."""
+        return tags_mod.tag_tree(self.conn)

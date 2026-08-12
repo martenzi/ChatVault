@@ -13,6 +13,7 @@ from textual.widgets import Checkbox, Footer, Header, Input, SelectionList, Stat
 from textual.widgets.selection_list import Selection
 
 from chatvault import export as export_mod
+from chatvault import tags as tags_mod
 from chatvault.screen_state import ScreenState
 
 # Undo is bound to a plain 'z', not ctrl+z/cmd+z: both of those are
@@ -135,7 +136,8 @@ class TaggingScreenApp(App):
 
         def _add(parent, nodes: dict) -> None:
             for name, node in sorted(nodes.items()):
-                label = f"{name} ({node.uses})" if node.uses else name
+                count = tags_mod.cumulative_count(node)
+                label = f"{name} ({count})" if count else name
                 child = parent.add(label, data=node.path)
                 _add(child, node.children)
                 child.expand()  # expanded by default (space still collapses) — down-arrow can then reach every node without an expand step first

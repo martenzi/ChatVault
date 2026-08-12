@@ -130,3 +130,35 @@ def test_convs_count_excludes_superseded_and_excluded_conversations(conn):
 
     row = [r for r in projects.list_projects(conn) if r["name"] == "Test Project"][0]
     assert row["convs"] == 1
+
+
+def test_backfill_ignores_superseded_conversations(conn):
+    """docs/21_FIX_scope_consistency.md's bug class, found again in
+    projects.backfill() itself: it must read v_conversations, not the base
+    table — otherwise a superseded duplicate gets its own project_id and its
+    own review/* tag_link alongside the live row that replaced it."""
+    from chatvault import dedupe
+    from chatvault.adapters.base import make_block, make_conversation, make_message
+
+    def _load(native_id, started_at):
+        cir = make_conversation(
+            platform="cursor", native_id=native_id, title=native_id, project="myproj",
+            started_at=started_at, ended_at=started_at, source_path="synthetic",
+            raw={"workspace_uri": "/Users/tester/dev/myproj.code-workspace"},
+            messages=[make_message(0, "user", None, started_at, [make_block(0, "text", "hi", raw={})], raw={})],
+        )
+        return loader.load_conversation(conn, cir, source_file_id=None)
+
+    old = _load("dup1", "2026-01-01T00:00:00")
+    new = _load("dup2", "2026-01-02T00:00:00")
+    conn.commit()
+    dedupe.supersede(conn, old.uid, new.uid)
+
+    report = projects.backfill(conn)
+    assert report.resolved == 1  # only the live replacement, not the superseded original
+
+    old_row = conn.execute("SELECT project_id FROM conversations WHERE id = ?", (old.conv_id,)).fetchone()
+    assert old_row["project_id"] is None
+
+    new_row = conn.execute("SELECT project_id FROM conversations WHERE id = ?", (new.conv_id,)).fetchone()
+    assert new_row["project_id"] is not None
