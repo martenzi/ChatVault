@@ -10,6 +10,7 @@ raw/*
 !raw/_manifest.jsonl
 raw_exclusions/*
 !raw_exclusions/_why.md
+raw_backups/
 .pytest_cache/
 *.egg-info/
 .claude/settings.local.json

@@ -1,0 +1,213 @@
+/* ChatVault Datasette Dark Mode Stylesheet */
+
+:root {
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #21262d;
+  --bg-hover: #1f242c;
+  --border-color: #30363d;
+  --border-subtle: #21262d;
+  --text-primary: #c9d1d9;
+  --text-heading: #f0f6fc;
+  --text-muted: #8b949e;
+  --accent-blue: #58a6ff;
+  --accent-blue-hover: #79c0ff;
+  --accent-green: #238636;
+  --accent-green-hover: #2ea043;
+  --accent-purple: #bc8cff;
+}
+
+html, body {
+  background-color: var(--bg-primary) !important;
+  color: var(--text-primary) !important;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  margin: 0;
+  padding: 0;
+}
+
+/* Links */
+a {
+  color: var(--accent-blue) !important;
+  text-decoration: none;
+}
+a:hover {
+  color: var(--accent-blue-hover) !important;
+  text-decoration: underline;
+}
+a:visited {
+  color: var(--accent-purple);
+}
+
+/* Headers & Navigation */
+header {
+  background-color: var(--bg-secondary) !important;
+  border-bottom: 1px solid var(--border-color) !important;
+  padding: 14px 24px !important;
+}
+header h1, header h1 a {
+  color: var(--text-heading) !important;
+  font-weight: 600;
+}
+header .nav, header p {
+  color: var(--text-muted) !important;
+}
+
+.crumbs, .breadcrumb {
+  color: var(--text-muted);
+}
+.crumbs a, .breadcrumb a {
+  color: var(--accent-blue) !important;
+}
+
+/* Tables & Data Grid */
+table.rows-and-columns, table {
+  border-collapse: collapse !important;
+  width: 100%;
+  margin-top: 12px;
+  border: 1px solid var(--border-color) !important;
+  background-color: var(--bg-primary) !important;
+}
+
+table.rows-and-columns th, table th {
+  background-color: var(--bg-secondary) !important;
+  color: var(--text-heading) !important;
+  border: 1px solid var(--border-color) !important;
+  padding: 10px 14px !important;
+  font-weight: 600;
+  text-align: left;
+}
+
+table.rows-and-columns td, table td {
+  background-color: var(--bg-primary) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border-subtle) !important;
+  padding: 8px 12px !important;
+}
+
+table.rows-and-columns tr:nth-child(even) td, table tr:nth-child(even) td {
+  background-color: var(--bg-secondary) !important;
+}
+
+table.rows-and-columns tr:hover td, table tr:hover td {
+  background-color: var(--bg-hover) !important;
+}
+
+/* Forms, Inputs, SQL Query Box */
+textarea, input[type="text"], input[type="search"], select {
+  background-color: var(--bg-secondary) !important;
+  color: var(--text-heading) !important;
+  border: 1px solid var(--border-color) !important;
+  border-radius: 6px !important;
+  padding: 8px 12px !important;
+  font-size: 14px;
+}
+
+textarea:focus, input[type="text"]:focus, input[type="search"]:focus, select:focus {
+  border-color: var(--accent-blue) !important;
+  outline: none !important;
+  box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.25) !important;
+}
+
+input[type="submit"], button, .button {
+  background-color: var(--accent-green) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(240, 246, 252, 0.1) !important;
+  border-radius: 6px !important;
+  padding: 6px 16px !important;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+input[type="submit"]:hover, button:hover, .button:hover {
+  background-color: var(--accent-green-hover) !important;
+}
+
+.sql-editor, textarea.sql {
+  background-color: var(--bg-secondary) !important;
+  color: #e6edf3 !important;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace !important;
+  border: 1px solid var(--border-color) !important;
+  border-radius: 6px !important;
+}
+
+/* Facets, Sidebar & Panels */
+.facet-results, .panel, .json, div.box {
+  background-color: var(--bg-secondary) !important;
+  border: 1px solid var(--border-color) !important;
+  border-radius: 6px !important;
+  padding: 14px !important;
+  margin-bottom: 14px !important;
+}
+
+.facet-results dt {
+  color: var(--text-muted) !important;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Code & Pre Blocks */
+pre, code {
+  background-color: var(--bg-secondary) !important;
+  color: var(--text-heading) !important;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+code {
+  padding: 2px 6px;
+  background-color: rgba(110, 118, 129, 0.2) !important;
+  border: none;
+}
+
+pre code {
+  padding: 0;
+  background-color: transparent !important;
+}
+
+/* Markdown Rendered Content */
+.render-markdown {
+  color: var(--text-primary) !important;
+  line-height: 1.6;
+}
+.render-markdown blockquote {
+  border-left: 4px solid var(--border-color) !important;
+  color: var(--text-muted) !important;
+  padding-left: 12px;
+  margin-left: 0;
+}
+
+/* Notices & Messages */
+.notice, .message-error {
+  background-color: #271010 !important;
+  border: 1px solid #8b0000 !important;
+  color: #ff7b72 !important;
+  border-radius: 6px;
+  padding: 10px 14px;
+}
+
+.message-info, .message-success {
+  background-color: #0d2d14 !important;
+  border: 1px solid #1a7f37 !important;
+  color: #56d364 !important;
+  border-radius: 6px;
+  padding: 10px 14px;
+}
+
+/* Footer */
+footer, .footer {
+  color: var(--text-muted) !important;
+  border-top: 1px solid var(--border-color) !important;
+  margin-top: 32px;
+  padding-top: 16px;
+}
+
+/* Export / Copyable plugin */
+.copyable-bar, .copyable {
+  background-color: var(--bg-secondary) !important;
+  border: 1px solid var(--border-color) !important;
+  border-radius: 6px;
+  color: var(--text-primary) !important;
+}
