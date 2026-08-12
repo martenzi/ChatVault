@@ -74,7 +74,7 @@
 # PART B — `ChatVault` · System, by subsystem
 
 ## B1. Ingest & adapters
-Eleven adapters, one canonical shape (CIR). `claude_web`, `chatgpt`, `chatgpt_legacy_recovered`, `claude_code`, `cursor_legacy`, `cursor_legacy_copilot`, `vscode_legacy`, `windsurf_legacy`, `openclaw`, `hermes`, `generic_jsonl`.
+Eleven adapters, one canonical shape (CIR). `claude_desktop`, `chatgpt`, `chatgpt_legacy_recovered`, `claude_code`, `cursor_legacy`, `cursor_legacy_copilot`, `vscode_legacy`, `windsurf_legacy`, `openclaw`, `hermes`, `generic_jsonl`.
 
 - Idempotent — re-ingest is safe by design
 - Four-level dedupe: file hash → conversation uid → continuation → block boilerplate
@@ -149,7 +149,7 @@ Ported from `claude_data_workspace_content`. Logic kept, plumbing replaced: read
 |---|---|---|
 | **`~/.claude/projects` never ingested — confirmed, still true 2026-08-12** | tracked in `01_STATE_OF_PLAY.md` §1 | small, but a deliberate data-ingestion decision, not a code fix |
 | Antigravity never recovered | history-r | unscoped |
-| `claude_web` project links | user-driven ingest+tag | user |
+| `claude_desktop` project links | user-driven ingest+tag | user |
 
 ## Solved since this was written
 | Problem | Resolution |

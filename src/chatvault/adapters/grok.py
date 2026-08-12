@@ -279,10 +279,10 @@ def parse_projects(path: Path) -> Iterator[dict]:
     unless a human says otherwise. See docs/20_FIX_project_identity.md §7.
 
     Safe to wire into ingest as of 2026-08-12: loader.load_project() now
-    reads `kind` from this dict (defaulting to 'desktop' for callers that
-    don't set it), so 'grok_project' lands correctly rather than being
-    forced to 'desktop'. Verified end-to-end against the real export: 33
-    rows land with kind='grok_project', zero with 'desktop'."""
+    reads `kind` from this dict (defaulting to 'claude_project' for callers
+    that don't set it), so 'grok_project' lands correctly rather than being
+    forced to 'claude_project'. Verified end-to-end against the real export:
+    33 rows land with kind='grok_project', zero with 'claude_project'."""
     data = orjson.loads(path.read_bytes())
     projects = data.get("projects") if isinstance(data, dict) else None
     if not projects:

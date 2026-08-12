@@ -84,9 +84,9 @@ A conversation that happened in the `CSN_Case` workspace **is** a CSN_Case conve
 | cursor, vscode, cursor_copilot, windsurf | `workspace_uri` in the legacy export → resolved during corpus export in `history-r` |
 | claude_code, openclaw | `cwd` field written by the tool itself |
 | hermes | session header `cwd` |
-| chatgpt, claude_web | **none** — web platforms have no workspace concept |
+| chatgpt, claude_desktop | **none** — web/account-export platforms have no workspace concept |
 
-`claude_web` should eventually get `project_id` from Claude Desktop projects, which are a different mechanism entirely — a conceptual grouping you created inside Claude, not a folder on disk. Both are "projects" for filtering purposes and rank equally; they just come from different places, which is why `projects.kind` exists.
+`claude_desktop` should eventually get `project_id` from `kind='claude_project'` rows, which are a different mechanism entirely — a conceptual grouping you created inside Claude, not a folder on disk (`kind='code_workspace'`). Both are "projects" for filtering purposes and rank equally; they just come from different places, which is why `projects.kind` exists.
 
 ---
 

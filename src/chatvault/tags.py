@@ -289,8 +289,8 @@ def flag_model_unknown(conn: sqlite3.Connection, conv_ids: list[int]) -> int:
     dedicated code rather than a blocks-based rule.
 
     Scoped to platform='gemini' deliberately, not every platform with
-    model_primary IS NULL: claude_web's export has no model field either,
-    but that's true of every claude_web conversation ever ingested, not an
+    model_primary IS NULL: claude_desktop's export has no model field either,
+    but that's true of every claude_desktop conversation ever ingested, not an
     exception worth a human's attention — flagging all of them would make
     the tag noise, not a review queue. Gemini is the platform this was
     actually built for (its own design doc calls it out explicitly); widen

@@ -19,7 +19,7 @@ from chatvault import tags as tags_mod
 # (flagged ambiguous, never silently merged). See CONCEPTS_label_tag_project.md.
 
 # Which raw_json field holds the workspace path, per platform. Anything not
-# listed here (chatgpt, claude_web, hermes) has no path-like project field —
+# listed here (chatgpt, claude_desktop, hermes) has no path-like project field —
 # hermes's `project` is a platform label ('telegram', 'cli'), not a folder —
 # so those conversations are left alone: flag, don't guess.
 _PATH_FIELD = {
@@ -53,8 +53,8 @@ def _raw_path(platform: str, raw_json: str | None) -> str | None:
 
 @dataclass
 class ResolvedIdentity:
-    kind: str          # workspace | scratch | unresolved
-    path: str | None   # normalised absolute dir (None for scratch/unresolved)
+    kind: str          # code_workspace | no_project | unresolved
+    path: str | None   # normalised absolute dir (None for no_project/unresolved)
     path_raw: str       # original URI, verbatim
 
 
@@ -109,19 +109,19 @@ def resolve_identity(raw_uri: str) -> ResolvedIdentity:
     normalised = _USERNAME_RE.sub("~/", decoded)
 
     if _SCRATCH_RE.search(normalised):
-        return ResolvedIdentity(kind="scratch", path=None, path_raw=raw_uri)
+        return ResolvedIdentity(kind="no_project", path=None, path_raw=raw_uri)
 
     if normalised.endswith(".code-workspace"):
         project_dir = str(PurePosixPath(normalised).parent)
-        return ResolvedIdentity(kind="workspace", path=project_dir, path_raw=raw_uri)
+        return ResolvedIdentity(kind="code_workspace", path=project_dir, path_raw=raw_uri)
 
     if _looks_like_file(normalised):
         root = _walk_up_for_project_root(normalised)
         if root:
-            return ResolvedIdentity(kind="workspace", path=root, path_raw=raw_uri)
+            return ResolvedIdentity(kind="code_workspace", path=root, path_raw=raw_uri)
         return ResolvedIdentity(kind="unresolved", path=None, path_raw=raw_uri)
 
-    return ResolvedIdentity(kind="workspace", path=normalised.rstrip("/"), path_raw=raw_uri)
+    return ResolvedIdentity(kind="code_workspace", path=normalised.rstrip("/"), path_raw=raw_uri)
 
 
 def _project_name(path: str) -> str:
@@ -202,11 +202,11 @@ def backfill(conn: sqlite3.Connection) -> BackfillReport:
             report.guessed_unresolved += 1
             continue
 
-        if identity.kind == "scratch":
+        if identity.kind == "no_project":
             uid = f"{row['platform']}:scratch"
             project_id, created = _get_or_create_project(
                 conn, uid=uid, platform=row["platform"], name="(no workspace)",
-                kind="scratch", path=None, path_raw=identity.path_raw,
+                kind="no_project", path=None, path_raw=identity.path_raw,
             )
             _tag_conv(conn, row["id"], "review/project-scratch")
             report.scratch += 1
@@ -214,7 +214,7 @@ def backfill(conn: sqlite3.Connection) -> BackfillReport:
             uid = f"{row['platform']}:ws:{identity.path}"
             project_id, created = _get_or_create_project(
                 conn, uid=uid, platform=row["platform"], name=_project_name(identity.path),
-                kind="workspace", path=identity.path, path_raw=identity.path_raw,
+                kind="code_workspace", path=identity.path, path_raw=identity.path_raw,
             )
             report.resolved += 1
 
@@ -230,15 +230,16 @@ def backfill(conn: sqlite3.Connection) -> BackfillReport:
 
 def _flag_ambiguous(conn: sqlite3.Connection) -> int:
     """Same display name, different real path — flagged, never silently
-    merged (§7). Scoped to kind='workspace' rows: a scratch bucket sharing
-    the literal name '(no workspace)' across platforms isn't a collision."""
-    conn.execute("UPDATE projects SET ambiguous = 0 WHERE kind = 'workspace'")
+    merged (§7). Scoped to kind='code_workspace' rows: a scratch bucket
+    sharing the literal name '(no workspace)' across platforms isn't a
+    collision."""
+    conn.execute("UPDATE projects SET ambiguous = 0 WHERE kind = 'code_workspace'")
     conn.execute(
         """
         UPDATE projects SET ambiguous = 1
-        WHERE kind = 'workspace' AND name IN (
+        WHERE kind = 'code_workspace' AND name IN (
             SELECT name FROM projects
-            WHERE kind = 'workspace' AND path IS NOT NULL
+            WHERE kind = 'code_workspace' AND path IS NOT NULL
             GROUP BY name HAVING COUNT(DISTINCT path) > 1
         )
         """
@@ -281,7 +282,7 @@ def review(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         SELECT p.id, p.platform, p.name, p.kind, p.path, p.ambiguous,
                (SELECT COUNT(*) FROM v_conversations c WHERE c.project_id = p.id) AS convs
         FROM v_projects p
-        WHERE p.ambiguous = 1 OR p.kind = 'scratch'
+        WHERE p.ambiguous = 1 OR p.kind = 'no_project'
         ORDER BY p.ambiguous DESC, p.platform, p.name
         """
     ).fetchall()

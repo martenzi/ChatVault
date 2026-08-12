@@ -23,7 +23,7 @@
 docs/
 ├── 00–04   Orientation      ← start here, numbered = reading order
 ├── 10–11   Concepts         ← reference; how to think about a thing
-├── 20–22   (empty)          ← the three fix docs that lived here are done; see archive/
+├── 20–22   Open fixes        ← work not yet done
 ├── 30      Dated notes      ← Q&A snapshots, freshness matters
 ├── specs/                   ← historical build specs (all delivered)
 ├── archive/                 ← superseded, do not act on
@@ -48,7 +48,7 @@ docs/
 - `11_CONCEPTS_neo4j_and_interfaces.md` — which interface when; what Neo4j is actually for
 
 ### Open fixes
-None currently open. The three that lived here (`20_FIX_project_identity.md`, `21_FIX_scope_consistency.md`, `22_FIX_tag_browsing_ux.md`) are done — moved to `archive/` 2026-08-12 with resolution notes. See `01_STATE_OF_PLAY.md` for what's still genuinely open (the `~/.claude/projects` ingestion question is real and unresolved, but it's a data-source gap, not a code fix, so it isn't a `FIX_*` doc).
+None open right now. The four that lived here (`20_FIX_project_identity.md`, `21_FIX_scope_consistency.md`, `22_FIX_tag_browsing_ux.md`, `20_FIX_naming_project_kinds.md`) are done — moved to `archive/` with resolution notes. `20_FIX_naming_project_kinds.md` (2026-08-12) renamed `projects.kind` vocabulary (`workspace`→`code_workspace`, `desktop`→`claude_project`, `scratch`→`no_project`), renamed the `claude_web` platform to `claude_desktop`, deleted the `not_found` tag, and added `v_model_coverage`. See `01_STATE_OF_PLAY.md` for what's still genuinely open (the `~/.claude/projects` ingestion question is real and unresolved, but it's a data-source gap, not a code fix, so it isn't a `FIX_*` doc).
 
 ### Notes
 - `30_NOTES_2026-08-10.md` — id vs uid, Datasette display, tagging workflow, venvs, missing platforms

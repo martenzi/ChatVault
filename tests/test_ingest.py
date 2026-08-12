@@ -40,12 +40,12 @@ def test_continuation_supersedes_shorter_version(conn):
     assert all_rows[0]["superseded_by"] == all_rows[1]["id"]
 
 
-def test_claude_web_adapter_ingests(conn):
-    path = FIXTURES / "claude_web" / "conversations.json"
+def test_claude_desktop_adapter_ingests(conn):
+    path = FIXTURES / "claude_desktop" / "conversations.json"
     summary = ingest.ingest_path(conn, path)
     assert summary.totals["inserted"] == 1
     row = conn.execute("SELECT platform, message_count FROM conversations").fetchone()
-    assert row["platform"] == "claude_web"
+    assert row["platform"] == "claude_desktop"
     assert row["message_count"] == 2
 
 

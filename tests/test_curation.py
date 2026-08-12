@@ -22,7 +22,7 @@ def test_exclude_then_restore_is_byte_equivalent(conn):
 
 
 def test_tag_add_is_idempotent(conn):
-    ingest.ingest_path(conn, FIXTURES / "claude_web" / "conversations.json")
+    ingest.ingest_path(conn, FIXTURES / "claude_desktop" / "conversations.json")
     curation.tag_add(conn, "starred", "1=1", "conversation")
     curation.tag_add(conn, "starred", "1=1", "conversation")
     rows = curation.tag_list(conn)
@@ -31,7 +31,7 @@ def test_tag_add_is_idempotent(conn):
 
 
 def test_search_respects_exclusion(conn):
-    ingest.ingest_path(conn, FIXTURES / "claude_web" / "conversations.json")
+    ingest.ingest_path(conn, FIXTURES / "claude_desktop" / "conversations.json")
     hits = search.search(conn, "graph schema")
     assert len(hits) == 1
 

@@ -3,11 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from types import ModuleType
 
-from chatvault.adapters import claude_code, claude_web
+from chatvault.adapters import claude_code, claude_desktop
 
 _REGISTRY: dict[str, ModuleType] = {
     "claude_code": claude_code,
-    "claude_web": claude_web,
+    "claude_desktop": claude_desktop,
 }
 
 

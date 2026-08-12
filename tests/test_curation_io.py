@@ -8,12 +8,12 @@ from tests.conftest import FIXTURES
 def _seed_curation(conn, config):
     """Ingest fixtures and add one of each entity type, including a
     block_class-style bulk exclusion."""
-    ingest.ingest_path(conn, FIXTURES / "claude_web" / "conversations.json", config=config)
+    ingest.ingest_path(conn, FIXTURES / "claude_desktop" / "conversations.json", config=config)
     ingest.ingest_path(conn, FIXTURES / "chatgpt" / "conversations.json", config=config)
 
     curation.tag_add(conn, "important", "1=1", "conversation")
     curation.note_add(conn, "conversation", 1, "this one matters")
-    curation.view_save(conn, "my-view", "SELECT id FROM v_conversations WHERE platform='claude_web'")
+    curation.view_save(conn, "my-view", "SELECT id FROM v_conversations WHERE platform='claude_desktop'")
 
     block_hash = conn.execute("SELECT content_hash FROM blocks LIMIT 1").fetchone()[0]
     curation.exclude(conn, "block", f"content_hash='{block_hash}'", reason="test bulk exclusion")
@@ -28,7 +28,7 @@ def test_export_wipe_reingest_import_restores_everything(vault, conn):
     migrate(vault)
     new_conn = connect(vault)
     try:
-        ingest.ingest_path(new_conn, FIXTURES / "claude_web" / "conversations.json", config=vault)
+        ingest.ingest_path(new_conn, FIXTURES / "claude_desktop" / "conversations.json", config=vault)
         ingest.ingest_path(new_conn, FIXTURES / "chatgpt" / "conversations.json", config=vault)
 
         summary = curation_io.import_curation(new_conn, data)
@@ -76,7 +76,7 @@ def test_import_content_drift_and_missing_target_are_reported_not_fatal(vault, c
 
     # hand-corrupt: reference a non-existent msg_idx and a wrong content_hash
     data["annotations"].append(
-        {"target": {"kind": "message", "conv_uid": "claude_web:web-conv-1", "msg_idx": 999, "content_hash": "x"}, "note": "ghost", "created_at": "2026-01-01T00:00:00Z"}
+        {"target": {"kind": "message", "conv_uid": "claude_desktop:web-conv-1", "msg_idx": 999, "content_hash": "x"}, "note": "ghost", "created_at": "2026-01-01T00:00:00Z"}
     )
     real_msg_target = dict(data["annotations"][0]["target"])
     if real_msg_target["kind"] != "message":
@@ -105,7 +105,7 @@ def test_dry_run_changes_nothing(vault, conn):
     migrate(vault)
     new_conn = connect(vault)
     try:
-        ingest.ingest_path(new_conn, FIXTURES / "claude_web" / "conversations.json", config=vault)
+        ingest.ingest_path(new_conn, FIXTURES / "claude_desktop" / "conversations.json", config=vault)
         ingest.ingest_path(new_conn, FIXTURES / "chatgpt" / "conversations.json", config=vault)
 
         before = new_conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
@@ -117,7 +117,7 @@ def test_dry_run_changes_nothing(vault, conn):
 
 
 def test_block_class_exclusion_reapplies_to_newly_ingested_blocks(vault, conn):
-    ingest.ingest_path(conn, FIXTURES / "claude_web" / "conversations.json", config=vault)
+    ingest.ingest_path(conn, FIXTURES / "claude_desktop" / "conversations.json", config=vault)
     block_hash = conn.execute("SELECT content_hash FROM blocks LIMIT 1").fetchone()[0]
     curation.exclude(conn, "block", f"content_hash='{block_hash}'", reason="boilerplate")
     data = curation_io.export_curation(conn)
@@ -134,7 +134,7 @@ def test_block_class_exclusion_reapplies_to_newly_ingested_blocks(vault, conn):
 
 
 def test_on_conflict_overwrite_vs_skip(vault, conn):
-    ingest.ingest_path(conn, FIXTURES / "claude_web" / "conversations.json", config=vault)
+    ingest.ingest_path(conn, FIXTURES / "claude_desktop" / "conversations.json", config=vault)
     curation.tag_add(conn, "important", "1=1", "conversation")
     data = curation_io.export_curation(conn)
     data["tags"][0]["colour"] = "#ff0000"
@@ -147,7 +147,7 @@ def test_on_conflict_overwrite_vs_skip(vault, conn):
 
 
 def test_replace_annotations_requires_confirm_and_logs_deletions(vault, conn):
-    ingest.ingest_path(conn, FIXTURES / "claude_web" / "conversations.json", config=vault)
+    ingest.ingest_path(conn, FIXTURES / "claude_desktop" / "conversations.json", config=vault)
     curation.note_add(conn, "conversation", 1, "old note")
     data = curation_io.export_curation(conn)
     uid = conn.execute("SELECT uid FROM conversations LIMIT 1").fetchone()["uid"]

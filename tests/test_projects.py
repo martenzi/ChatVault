@@ -5,19 +5,19 @@ from tests.conftest import FIXTURES
 
 
 def _ingest_projects_fixture(conn):
-    return ingest.ingest_path(conn, FIXTURES / "claude_web" / "projects.json")
+    return ingest.ingest_path(conn, FIXTURES / "claude_desktop" / "projects.json")
 
 
 def test_projects_file_is_detected_and_routed_separately_from_conversations():
-    mod = adapters.detect_projects(FIXTURES / "claude_web" / "projects.json")
+    mod = adapters.detect_projects(FIXTURES / "claude_desktop" / "projects.json")
     assert mod is not None
-    assert mod.platform == "claude_web"
+    assert mod.platform == "claude_desktop"
     # and it must NOT be picked up by the plain conversation sniff
-    assert adapters.detect(FIXTURES / "claude_web" / "projects.json") is None
+    assert adapters.detect(FIXTURES / "claude_desktop" / "projects.json") is None
 
 
 def test_conversations_file_is_not_mistaken_for_a_projects_file():
-    assert adapters.detect_projects(FIXTURES / "claude_web" / "conversations.json") is None
+    assert adapters.detect_projects(FIXTURES / "claude_desktop" / "conversations.json") is None
 
 
 def test_ingest_creates_project_rows(conn):
@@ -53,8 +53,8 @@ def test_reingest_updates_in_place_not_duplicates(conn):
 
     # force a second parse+load (bypassing the source_files sha dedup) to
     # exercise load_project's update path directly
-    mod = adapters.detect_projects(FIXTURES / "claude_web" / "projects.json")
-    for project in mod.parse_projects(FIXTURES / "claude_web" / "projects.json"):
+    mod = adapters.detect_projects(FIXTURES / "claude_desktop" / "projects.json")
+    for project in mod.parse_projects(FIXTURES / "claude_desktop" / "projects.json"):
         result = loader.load_project(conn, project, source_file_id=None)
         assert result["action"] == "updated"
     conn.commit()
@@ -66,7 +66,7 @@ def test_same_named_project_on_different_platforms_stays_separate_rows(conn):
     """Spec v1.4 §B.1: platform is NOT NULL and never merged/summed/shown
     ambiguously — two same-named projects on different platforms are two
     unrelated records."""
-    for platform in ("claude_web", "chatgpt"):
+    for platform in ("claude_desktop", "chatgpt"):
         loader.load_project(
             conn,
             {
@@ -85,7 +85,7 @@ def test_same_named_project_on_different_platforms_stays_separate_rows(conn):
 
     rows = [r for r in projects.list_projects(conn) if r["name"] == "Second Brain"]
     assert len(rows) == 2
-    assert {r["platform"] for r in rows} == {"claude_web", "chatgpt"}
+    assert {r["platform"] for r in rows} == {"claude_desktop", "chatgpt"}
     # every row from v_projects carries a non-null platform, always
     assert all(r["platform"] for r in rows)
 

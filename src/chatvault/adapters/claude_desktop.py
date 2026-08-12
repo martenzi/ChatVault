@@ -8,8 +8,8 @@ import orjson
 
 from chatvault.adapters.base import make_attachment, make_block, make_conversation, make_message
 
-platform = "claude_web"
-name = "claude_web"
+platform = "claude_desktop"
+name = "claude_desktop"
 
 _SENDER_TO_ROLE = {"human": "user", "assistant": "assistant", "system": "system"}
 

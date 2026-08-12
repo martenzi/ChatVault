@@ -5,10 +5,11 @@ from tests.conftest import FIXTURES
 
 
 def test_audit_passes_on_healthy_vault(vault, conn):
-    # claude_code's fixture has full model coverage (unlike claude_web, which
-    # genuinely lacks model data in its source and would legitimately FAIL
-    # the model-coverage check — that's correct audit behavior, not a bug,
-    # so it's the wrong fixture for a "nothing's wrong" baseline).
+    # claude_code's fixture has full model coverage (unlike claude_desktop, which
+    # genuinely lacks model data in its source — audit.KNOWN_NULL_MODEL_PLATFORMS
+    # excludes it from the model-coverage check for exactly that reason, so
+    # it would pass anyway, but claude_code stays the cleaner "nothing's
+    # wrong" baseline).
     ingest.ingest_path(conn, FIXTURES / "claude_code" / "session1.jsonl", config=vault)
     report = audit.run(conn, vault)
     assert audit.verdict(report) in ("pass", "warn")  # tiny fixtures can legitimately warn on char_count percentile
@@ -48,6 +49,20 @@ def test_audit_catches_null_model(vault, conn):
     assert model_check.status == "fail"
 
 
+def test_audit_known_null_model_platform_does_not_fail(vault, conn):
+    ingest.ingest_path(conn, FIXTURES / "claude_desktop" / "conversations.json", config=vault)
+
+    report = audit.run(conn, vault, platform="claude_desktop")
+    model_check = [r for r in report.results if r.name == "assistant messages with model"][0]
+    assert model_check.status == "pass"
+
+    # Whole-DB run excludes claude_desktop from the aggregate too, so its
+    # known-absent model data doesn't drag the overall check into fail.
+    report_all = audit.run(conn, vault)
+    model_check_all = [r for r in report_all.results if r.name == "assistant messages with model"][0]
+    assert model_check_all.status != "fail"
+
+
 def test_audit_strict_promotes_warn_to_fail_exit_code(vault, conn):
     ingest.ingest_path(conn, FIXTURES / "claude_code" / "session1.jsonl", config=vault)
     # force a WARN deterministically: null out started_at (>5% WARN threshold)
@@ -80,7 +95,7 @@ def test_audit_ignores_raw_exclusions(vault, conn):
 
 
 def test_audit_persists_run(vault, conn):
-    ingest.ingest_path(conn, FIXTURES / "claude_web" / "conversations.json", config=vault)
+    ingest.ingest_path(conn, FIXTURES / "claude_desktop" / "conversations.json", config=vault)
     report = audit.run(conn, vault)
     audit.persist(conn, report)
 

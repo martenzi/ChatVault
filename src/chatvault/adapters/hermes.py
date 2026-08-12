@@ -69,7 +69,7 @@ def sniff(path: Path) -> bool:
         if not isinstance(data, dict):
             return False
         if "mapping" in data or "chat_messages" in data:
-            return False  # chatgpt / claude_web territory
+            return False  # chatgpt / claude_desktop territory
         return _looks_like_message_list(data.get("messages")) and (
             "session_start" in data or "session_id" in data or "model" in data
         )

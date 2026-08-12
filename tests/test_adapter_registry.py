@@ -34,7 +34,7 @@ def test_every_fixture_matches_exactly_one_conversation_adapter():
                         matched.append(name)
                 except Exception:
                     continue
-            # <= 1 rather than == 1: some fixtures (e.g. claude_web's
+            # <= 1 rather than == 1: some fixtures (e.g. claude_desktop's
             # projects.json) are routed entirely through sniff_projects()
             # instead of sniff(), and legitimately match no conversation
             # adapter at all. What must never happen is *two* adapters

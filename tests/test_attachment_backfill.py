@@ -15,20 +15,20 @@ def _seed_as_already_ingested_under_old_adapter(conn, path):
     """Simulate the real production scenario: this file was already ingested
     by ingest_path (a source_files row exists with status='ok') back when the
     adapter didn't extract attachment metadata yet. Returns the conv_id."""
-    from chatvault.adapters import claude_web
+    from chatvault.adapters import claude_desktop
 
     sha = hashing.file_sha256(path)
     now = datetime.now(timezone.utc).isoformat()
     cur = conn.execute(
         """
         INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, kind, last_seen_at, root_dir, first_seen_at)
-        VALUES (?, ?, 'claude_web', 'claude_web', ?, ?, 'ok', 'frozen', ?, ?, ?)
+        VALUES (?, ?, 'claude_desktop', 'claude_desktop', ?, ?, 'ok', 'frozen', ?, ?, ?)
         """,
         (str(path), sha, path.stat().st_size, now, now, str(path.parent), now),
     )
     source_file_id = cur.lastrowid
 
-    cir = _parse_first(claude_web, path)
+    cir = _parse_first(claude_desktop, path)
     old_cir = copy.deepcopy(cir)
     for msg in old_cir["messages"]:
         for block in msg["blocks"]:
@@ -42,7 +42,7 @@ def test_reingest_without_reprocess_does_not_backfill(conn):
     """The default path (no --reprocess): file-level sha256 dedup skips the
     file entirely on a second ingest, so nothing changes. This is the
     baseline the --reprocess flag exists to work around."""
-    path = FIXTURES / "claude_web" / "conversations_with_attachments.json"
+    path = FIXTURES / "claude_desktop" / "conversations_with_attachments.json"
     _seed_as_already_ingested_under_old_adapter(conn, path)
     assert conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == 0
 
@@ -59,10 +59,10 @@ def test_backfill_attaches_metadata_to_an_already_ingested_conversation_without_
     metadata in place — same block rows, same conv_id, no duplicate
     conversations/messages/blocks — never by content_hash alone, since the
     hash is unchanged (text/type/tool_name didn't change)."""
-    from chatvault.adapters import claude_web
+    from chatvault.adapters import claude_desktop
 
-    path = FIXTURES / "claude_web" / "conversations_with_attachments.json"
-    cir = _parse_first(claude_web, path)
+    path = FIXTURES / "claude_desktop" / "conversations_with_attachments.json"
+    cir = _parse_first(claude_desktop, path)
 
     # strip the attachment payloads to simulate the OLD adapter's output —
     # same text/type, no metadata — then load it as the "already ingested"
@@ -104,10 +104,10 @@ def test_backfill_attaches_metadata_to_an_already_ingested_conversation_without_
 
 
 def test_backfill_is_idempotent(conn):
-    from chatvault.adapters import claude_web
+    from chatvault.adapters import claude_desktop
 
-    path = FIXTURES / "claude_web" / "conversations_with_attachments.json"
-    cir = _parse_first(claude_web, path)
+    path = FIXTURES / "claude_desktop" / "conversations_with_attachments.json"
+    cir = _parse_first(claude_desktop, path)
 
     old_cir = copy.deepcopy(cir)
     for msg in old_cir["messages"]:
@@ -131,7 +131,7 @@ def test_cli_reprocess_flag_triggers_backfill_end_to_end(conn):
     """Same scenario via the public ingest_path/--reprocess surface rather
     than calling loader.load_conversation directly — this is exactly what
     running `chatvault ingest <path> --reprocess` does in production."""
-    path = FIXTURES / "claude_web" / "conversations_with_attachments.json"
+    path = FIXTURES / "claude_desktop" / "conversations_with_attachments.json"
     _seed_as_already_ingested_under_old_adapter(conn, path)
     assert conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == 0
 

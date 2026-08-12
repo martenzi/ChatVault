@@ -6,7 +6,7 @@ from tests.conftest import FIXTURES
 
 
 def _ingest_att_fixture(conn):
-    ingest.ingest_path(conn, FIXTURES / "claude_web" / "conversations_with_attachments.json")
+    ingest.ingest_path(conn, FIXTURES / "claude_desktop" / "conversations_with_attachments.json")
 
 
 def test_attachment_with_extracted_content_is_stored_as_text(conn):
@@ -123,7 +123,7 @@ def test_exclude_hides_from_v_attachments_reversibly(conn):
 def test_reingesting_the_same_file_does_not_duplicate_attachment_rows(conn):
     _ingest_att_fixture(conn)
     # source_files dedup by sha256 means this is a no-op re-ingest
-    ingest.ingest_path(conn, FIXTURES / "claude_web" / "conversations_with_attachments.json")
+    ingest.ingest_path(conn, FIXTURES / "claude_desktop" / "conversations_with_attachments.json")
     text_rows = [r for r in attachments.list_attachments(conn) if r["availability"] == "text"]
     assert len(text_rows) == 1
 

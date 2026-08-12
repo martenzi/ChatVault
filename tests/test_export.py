@@ -5,7 +5,7 @@ from tests.conftest import FIXTURES
 
 
 def test_export_default_template_renders_prose(conn):
-    ingest.ingest_path(conn, FIXTURES / "claude_web" / "conversations.json")
+    ingest.ingest_path(conn, FIXTURES / "claude_desktop" / "conversations.json")
     rows = export.get_conversations(conn, where="1=1")
     assert len(rows) == 1
     content = export.render(conn, rows[0], "default")
@@ -40,8 +40,8 @@ def test_export_digest_lists_all_matched_conversations(conn):
 
 
 def test_filename_is_deterministic(conn):
-    ingest.ingest_path(conn, FIXTURES / "claude_web" / "conversations.json")
+    ingest.ingest_path(conn, FIXTURES / "claude_desktop" / "conversations.json")
     rows = export.get_conversations(conn, where="1=1")
     conv = dict(rows[0])
     conv["uid_short"] = conv["uid"].split(":")[-1][:12]
-    assert export.filename_for(conv, "default") == "2026-03-01--claude_web--neo4j-schema-design--web-conv-1.md"
+    assert export.filename_for(conv, "default") == "2026-03-01--claude_desktop--neo4j-schema-design--web-conv-1.md"

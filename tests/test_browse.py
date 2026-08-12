@@ -125,7 +125,7 @@ def test_pick_cache_invalidates_on_db_change(vault, conn):
 
     other_conn = connect(vault)
     try:
-        ingest.ingest_path(other_conn, FIXTURES / "claude_web" / "conversations.json")
+        ingest.ingest_path(other_conn, FIXTURES / "claude_desktop" / "conversations.json")
     finally:
         other_conn.close()
 

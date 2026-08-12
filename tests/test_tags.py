@@ -204,7 +204,7 @@ def test_ingest_auto_applies_rules_to_newly_inserted_conversations(conn):
     tags.rule_add(conn, "purpose/troubleshooting", "blocks.text LIKE '%broken%'", min_hits=1)
 
     cir = mc(
-        platform="claude_web", native_id="auto-1", title="a broken thing", project=None,
+        platform="claude_desktop", native_id="auto-1", title="a broken thing", project=None,
         started_at="2026-01-01T00:00:00", ended_at="2026-01-01T00:00:00", source_path="synthetic", raw={},
         messages=[mm(0, "user", None, "2026-01-01T00:00:00", [mb(0, "text", "this is broken", raw={})], raw={})],
     )

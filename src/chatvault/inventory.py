@@ -156,7 +156,7 @@ def _detect_json(path: Path, deep: bool) -> FileReport:
         if b'"mapping"' in prefix:
             platform, adapter = "chatgpt", "chatgpt"
         elif b'"chat_messages"' in prefix:
-            platform, adapter = "claude_web", "claude_web"
+            platform, adapter = "claude_desktop", "claude_desktop"
         elif b'"accountUserId"' in prefix and b'"isArchived"' in prefix:
             platform, adapter = "chatgpt", "chatgpt_legacy_recovered"
         return FileReport(path=path, platform=platform, adapter=adapter, bytes=path.stat().st_size, note=note)
@@ -176,7 +176,7 @@ def _detect_json(path: Path, deep: bool) -> FileReport:
             platform, adapter = "chatgpt", "chatgpt"
             sample_title = first.get("title")
         elif "chat_messages" in first:
-            platform, adapter = "claude_web", "claude_web"
+            platform, adapter = "claude_desktop", "claude_desktop"
             sample_title = first.get("name") or first.get("title")
         elif "accountUserId" in first and "isArchived" in first:
             platform, adapter = "chatgpt", "chatgpt_legacy_recovered"

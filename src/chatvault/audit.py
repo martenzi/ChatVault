@@ -12,6 +12,13 @@ from chatvault.config import Config
 
 _STATUS_RANK = {"pass": 0, "warn": 1, "fail": 2}
 
+# Platforms whose export genuinely never carries a model field — a fact
+# already recorded in messages.model (see v_model_coverage), not a defect
+# to chase. Excluded from the "assistant messages with model" pass/warn/fail
+# threshold so they don't register as a failure every run; still counted
+# and shown elsewhere (v_model_coverage, per-platform audit runs).
+KNOWN_NULL_MODEL_PLATFORMS = {"gemini", "claude_desktop"}
+
 
 @dataclass
 class CheckResult:
@@ -131,17 +138,37 @@ def _check_metadata_coverage(conn: sqlite3.Connection, platform: str | None) -> 
     platform_clause = "AND c.platform = ?" if platform else ""
     params = (platform,) if platform else ()
 
-    total_assistant = conn.execute(
-        f"SELECT COUNT(*) FROM v_messages m JOIN v_conversations c ON c.id = m.conv_id WHERE m.role = 'assistant' {platform_clause}",  # noqa: S608
-        params,
-    ).fetchone()[0]
-    null_model = conn.execute(
-        f"SELECT COUNT(*) FROM v_messages m JOIN v_conversations c ON c.id = m.conv_id WHERE m.role = 'assistant' AND m.model IS NULL {platform_clause}",  # noqa: S608
-        params,
-    ).fetchone()[0]
-    pct = _pct(null_model, total_assistant)
-    status = "fail" if pct > 20 else ("warn" if pct > 5 else "pass")
-    results.append(CheckResult("C", "assistant messages with model", status, f"{pct:.1f}% NULL model ({null_model}/{total_assistant})"))
+    if platform in KNOWN_NULL_MODEL_PLATFORMS:
+        # Scoped to a single known-null-model platform: the model field is
+        # genuinely absent from this export, not a coverage gap — report the
+        # real numbers but don't fail on them.
+        total_assistant = conn.execute(
+            f"SELECT COUNT(*) FROM v_messages m JOIN v_conversations c ON c.id = m.conv_id WHERE m.role = 'assistant' {platform_clause}",  # noqa: S608
+            params,
+        ).fetchone()[0]
+        null_model = conn.execute(
+            f"SELECT COUNT(*) FROM v_messages m JOIN v_conversations c ON c.id = m.conv_id WHERE m.role = 'assistant' AND m.model IS NULL {platform_clause}",  # noqa: S608
+            params,
+        ).fetchone()[0]
+        pct = _pct(null_model, total_assistant)
+        results.append(CheckResult("C", "assistant messages with model", "pass", f"{pct:.1f}% NULL model ({null_model}/{total_assistant}) — known absent from this export, see v_model_coverage"))
+    else:
+        # Excludes known-null-model platforms from the aggregate so their
+        # documented, unavoidable nulls don't drag every whole-DB audit run
+        # into warn/fail.
+        allowlist_clause = " AND c.platform NOT IN ({})".format(",".join("?" * len(KNOWN_NULL_MODEL_PLATFORMS))) if not platform else ""
+        allowlist_params = tuple(KNOWN_NULL_MODEL_PLATFORMS) if not platform else ()
+        total_assistant = conn.execute(
+            f"SELECT COUNT(*) FROM v_messages m JOIN v_conversations c ON c.id = m.conv_id WHERE m.role = 'assistant' {platform_clause}{allowlist_clause}",  # noqa: S608
+            params + allowlist_params,
+        ).fetchone()[0]
+        null_model = conn.execute(
+            f"SELECT COUNT(*) FROM v_messages m JOIN v_conversations c ON c.id = m.conv_id WHERE m.role = 'assistant' AND m.model IS NULL {platform_clause}{allowlist_clause}",  # noqa: S608
+            params + allowlist_params,
+        ).fetchone()[0]
+        pct = _pct(null_model, total_assistant)
+        status = "fail" if pct > 20 else ("warn" if pct > 5 else "pass")
+        results.append(CheckResult("C", "assistant messages with model", status, f"{pct:.1f}% NULL model ({null_model}/{total_assistant}), excluding known-null platforms {sorted(KNOWN_NULL_MODEL_PLATFORMS)}"))
 
     total_msgs = conn.execute(f"SELECT COUNT(*) FROM v_messages m JOIN v_conversations c ON c.id = m.conv_id WHERE 1=1 {platform_clause}", params).fetchone()[0]  # noqa: S608
     null_created = conn.execute(

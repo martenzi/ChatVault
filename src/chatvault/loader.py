@@ -105,20 +105,20 @@ def load_project(conn: sqlite3.Connection, project: dict, source_file_id: int | 
     from load_conversation: projects aren't conversations and are addressed
     by their own uid, never content-hashed.
 
-    `kind` was hardcoded to 'desktop' here until 2026-08-12 — fine while
-    Claude Desktop's parse_projects() was the only caller, but wrong the
-    moment a second platform-conceptual grouping shows up (Grok's
-    workspace_id-keyed "Projects", conceptually a sibling of Claude
-    Desktop's, not of an editor's filesystem workspace — see
+    `kind` was hardcoded to 'claude_project' (formerly 'desktop') here until
+    2026-08-12 — fine while Claude Desktop's parse_projects() was the only
+    caller, but wrong the moment a second platform-conceptual grouping shows
+    up (Grok's workspace_id-keyed "Projects", conceptually a sibling of
+    Claude Desktop's, not of an editor's filesystem workspace — see
     grok.py:parse_projects and docs/20_FIX_project_identity.md). Reading
-    `kind` from the adapter's dict, defaulting to 'desktop', keeps every
-    existing caller's behavior byte-identical while letting a new one opt
-    in. No migration needed: migration 010 added `kind` as a plain TEXT
-    column with no CHECK constraint restricting its values."""
+    `kind` from the adapter's dict, defaulting to 'claude_project', keeps
+    every existing caller's behavior byte-identical while letting a new one
+    opt in. Migration 013 added validity triggers restricting `kind` to
+    code_workspace | claude_project | grok_project | no_project."""
     now = datetime.now(timezone.utc).isoformat()
     native_id = project.get("native_id")
     uid = f"{project['platform']}:{native_id}" if native_id else f"{project['platform']}:h:{hashing.attachment_content_hash(project.get('name'))}"
-    kind = project.get("kind") or "desktop"
+    kind = project.get("kind") or "claude_project"
 
     existing = conn.execute("SELECT id FROM projects WHERE uid = ?", (uid,)).fetchone()
     if existing is not None:
