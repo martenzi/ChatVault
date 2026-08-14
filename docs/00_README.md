@@ -12,6 +12,7 @@
 | **02** | `02_DECISIONS.md` | Why it's built this way | Before proposing changes |
 | **03** | `03_INDEX_themes_and_domains.md` | Structural map — what lives where | When orienting or hunting |
 | **04** | `04_HISTORY_how_we_got_here_2026-08-09.md` | The narrative, with timeline | For context, not for decisions |
+| **05** | `05_INGESTION_LEDGER.md` | **What's ingested, from where, when — and what's missing** | Before any ingest, or when asking "do we have X?" |
 
 **Starting a new AI thread?** *"Read `docs/01_STATE_OF_PLAY.md` and `docs/02_DECISIONS.md`, then [your question]."* That's the whole handoff.
 
@@ -21,7 +22,7 @@
 
 ```
 docs/
-├── 00–04   Orientation      ← start here, numbered = reading order
+├── 00–05   Orientation      ← start here, numbered = reading order
 ├── 10–11   Concepts         ← reference; how to think about a thing
 ├── 20–22   Open fixes        ← work not yet done
 ├── 30      Dated notes      ← Q&A snapshots, freshness matters
@@ -42,13 +43,17 @@ docs/
 - `02_DECISIONS.md` — 14 decisions with their rejected alternatives
 - `03_INDEX_themes_and_domains.md` — by workspace, by editor, by subsystem; solved vs open
 - `04_HISTORY_how_we_got_here_2026-08-09.md` — timeline from recovery to working system
+- `05_INGESTION_LEDGER.md` — **the ingestion journal.** Sources, dates, counts, gaps. Regenerate rather than edit.
 
 ### Concepts
 - `10_CONCEPTS_label_tag_project.md` — project label vs tag vs `project_id`. **Read before tagging.**
 - `11_CONCEPTS_neo4j_and_interfaces.md` — which interface when; what Neo4j is actually for
 
 ### Open fixes
-None open right now. The four that lived here (`20_FIX_project_identity.md`, `21_FIX_scope_consistency.md`, `22_FIX_tag_browsing_ux.md`, `20_FIX_naming_project_kinds.md`) are done — moved to `archive/` with resolution notes. `20_FIX_naming_project_kinds.md` (2026-08-12) renamed `projects.kind` vocabulary (`workspace`→`code_workspace`, `desktop`→`claude_project`, `scratch`→`no_project`), renamed the `claude_web` platform to `claude_desktop`, deleted the `not_found` tag, and added `v_model_coverage`. See `01_STATE_OF_PLAY.md` for what's still genuinely open (the `~/.claude/projects` ingestion question is real and unresolved, but it's a data-source gap, not a code fix, so it isn't a `FIX_*` doc).
+- `40_SPEC_second_brain_v0.md` *(2026-08-12)* — stash + brief. Parts A & B only, ~4h, Sonnet mid.
+- `05_INGESTION_LEDGER.md` §5 — add `chatvault ledger` command + `server_side` source kind. ~1h, Sonnet low.
+
+Previously open, now done. The four that lived here (`20_FIX_project_identity.md`, `21_FIX_scope_consistency.md`, `22_FIX_tag_browsing_ux.md`, `20_FIX_naming_project_kinds.md`) are done — moved to `archive/` with resolution notes. `20_FIX_naming_project_kinds.md` (2026-08-12) renamed `projects.kind` vocabulary (`workspace`→`code_workspace`, `desktop`→`claude_project`, `scratch`→`no_project`), renamed the `claude_web` platform to `claude_desktop`, deleted the `not_found` tag, and added `v_model_coverage`. See `01_STATE_OF_PLAY.md` for what's still genuinely open (the `~/.claude/projects` ingestion question is real and unresolved, but it's a data-source gap, not a code fix, so it isn't a `FIX_*` doc).
 
 ### Notes
 - `30_NOTES_2026-08-10.md` — id vs uid, Datasette display, tagging workflow, venvs, missing platforms

@@ -21,6 +21,7 @@ from chatvault import export as export_mod
 from chatvault import graph as graph_mod
 from chatvault import ingest as ingest_mod
 from chatvault import inventory as inventory_mod
+from chatvault import ledger as ledger_mod
 from chatvault import portfolio as portfolio_mod
 from chatvault import projects as projects_mod
 from chatvault import reconcile as reconcile_mod
@@ -159,6 +160,53 @@ def backup(
 
     info = backup_mod.create_backup(config, label=label, out_dir=out)
     console.print(f"wrote {info.path} ({_human_bytes(info.bytes)}, {info.conversation_count} conversations, {info.tag_count} tags)")
+
+
+@app.command()
+def ledger(
+    markdown: Path = typer.Option(None, "--markdown", help="Regenerate this doc's '## 1. What's ingested' section in place (e.g. docs/05_INGESTION_LEDGER.md)."),
+    stale: bool = typer.Option(False, "--stale", help="List server_side sources not re-exported in --days days."),
+    days: int = typer.Option(30, "--days", help="With --stale, staleness threshold in days."),
+) -> None:
+    """What's in the vault, live from source_files — see docs/05_INGESTION_LEDGER.md §5.
+    No flags: print the table. --markdown: regenerate a doc's ledger section.
+    --stale: which server-side exports (claude_desktop/chatgpt/grok/gemini/deepseek) need refreshing."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        if stale:
+            stale_rows = ledger_mod.stale(conn, days=days)
+            if not stale_rows:
+                console.print(f"[green]nothing stale (threshold: {days}d)[/green]")
+                return
+            table = Table(title=f"stale server_side sources (>{days}d)")
+            table.add_column("platform")
+            table.add_column("kind")
+            table.add_column("last_seen")
+            table.add_column("days_stale", justify="right")
+            for s in stale_rows:
+                table.add_row(s.platform, s.kind, s.last_seen or "-", str(s.days_stale) if s.days_stale is not None else "?")
+            console.print(table)
+            return
+
+        if markdown:
+            ledger_mod.regenerate_markdown(conn, markdown)
+            console.print(f"regenerated '## 1. What's ingested' in {markdown}")
+            return
+
+        rows = ledger_mod.render_table_rows(ledger_mod.rows(conn))
+        table = Table(title="ledger")
+        table.add_column("ingested")
+        table.add_column("platform")
+        table.add_column("kind")
+        table.add_column("files", justify="right")
+        table.add_column("convs", justify="right")
+        table.add_column("source")
+        for ingested, platform, kind, files, convs, source in rows:
+            table.add_row(ingested, platform, kind, files, convs, source)
+        console.print(table)
+    finally:
+        conn.close()
 
 
 @app.command()
@@ -1310,7 +1358,7 @@ def graph_canned(name: str = typer.Argument(..., help=f"one of: {', '.join(graph
 
 
 @sources_app.command("list")
-def sources_list(kind: str = typer.Option(None, "--kind", help="live | frozen")) -> None:
+def sources_list(kind: str = typer.Option(None, "--kind", help="live | frozen | server_side")) -> None:
     config = load_config()
     conn = connect(config)
     try:
@@ -1337,7 +1385,7 @@ def sources_list(kind: str = typer.Option(None, "--kind", help="live | frozen"))
 @sources_app.command("mark")
 def sources_mark(
     path_or_root: str = typer.Argument(...),
-    kind: str = typer.Option(..., "--kind", help="live | frozen"),
+    kind: str = typer.Option(..., "--kind", help="live | frozen | server_side"),
 ) -> None:
     config = load_config()
     conn = connect(config)

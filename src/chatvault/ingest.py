@@ -6,10 +6,22 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from chatvault import adapters, hashing, loader
+from chatvault import adapters, hashing, ledger, loader
 from chatvault.config import Config
 
 KNOWN_EXTENSIONS = {".json", ".jsonl"}
+
+
+def _kind_for_platform(platform: str) -> str:
+    """New source_files rows for a known server-side platform (Claude
+    Desktop, ChatGPT, Grok, Gemini, DeepSeek — see ledger.SERVER_SIDE_PLATFORMS
+    / migration 015) start life as 'server_side', not 'frozen': these sources
+    go stale the moment they're exported, unlike a genuine one-time capture.
+    Everything else defaults to 'frozen' as before; `sources mark --kind live`
+    remains the explicit opt-in for a locally-growing directory, and re-ingest
+    never overwrites a kind a human already set (see the ON CONFLICT clauses
+    below, which don't touch kind)."""
+    return "server_side" if platform in ledger.SERVER_SIDE_PLATFORMS else "frozen"
 
 # Some sources write archived/backup copies with a compound extension —
 # OpenClaw's pre-reset session backups are named "<uuid>.jsonl.reset" or
@@ -113,13 +125,13 @@ def _ingest_projects_file(
         conn.execute(
             """
             INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, error, kind, last_seen_at, root_dir, first_seen_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'failed', ?, 'frozen', ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 'failed', ?, ?, ?, ?, ?)
             ON CONFLICT(sha256, adapter) DO UPDATE SET
                 status='failed', error=excluded.error, ingested_at=excluded.ingested_at,
                 last_seen_at=excluded.last_seen_at, root_dir=excluded.root_dir,
                 first_seen_at=COALESCE(source_files.first_seen_at, excluded.first_seen_at)
             """,
-            (str(file_path), sha, mod.platform, projects_adapter, file_path.stat().st_size, now, str(exc), now, root_dir, now),
+            (str(file_path), sha, mod.platform, projects_adapter, file_path.stat().st_size, now, str(exc), _kind_for_platform(mod.platform), now, root_dir, now),
         )
         conn.commit()
         return FileIngestResult(file_path, "failed", adapter=adapter_label, error=str(exc))
@@ -127,13 +139,13 @@ def _ingest_projects_file(
     cur = conn.execute(
         """
         INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, kind, last_seen_at, root_dir, first_seen_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'ok', 'frozen', ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, 'ok', ?, ?, ?, ?)
         ON CONFLICT(sha256, adapter) DO UPDATE SET
             status='ok', error=NULL, ingested_at=excluded.ingested_at,
             last_seen_at=excluded.last_seen_at, root_dir=excluded.root_dir,
             first_seen_at=COALESCE(source_files.first_seen_at, excluded.first_seen_at)
         """,
-        (str(file_path), sha, mod.platform, projects_adapter, file_path.stat().st_size, now, now, root_dir, now),
+        (str(file_path), sha, mod.platform, projects_adapter, file_path.stat().st_size, now, _kind_for_platform(mod.platform), now, root_dir, now),
     )
     source_file_id = cur.lastrowid or conn.execute(
         "SELECT id FROM source_files WHERE sha256 = ? AND adapter = ?", (sha, projects_adapter)
@@ -242,13 +254,13 @@ def ingest_path(
             conn.execute(
                 """
                 INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, error, kind, last_seen_at, root_dir, first_seen_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'failed', ?, 'frozen', ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, 'failed', ?, ?, ?, ?, ?)
                 ON CONFLICT(sha256, adapter) DO UPDATE SET
                     status='failed', error=excluded.error, ingested_at=excluded.ingested_at,
                     last_seen_at=excluded.last_seen_at, root_dir=excluded.root_dir,
                     first_seen_at=COALESCE(source_files.first_seen_at, excluded.first_seen_at)
                 """,
-                (str(file_path), sha, mod.platform, mod.name, file_path.stat().st_size, now, str(exc), now, root_dir, now),
+                (str(file_path), sha, mod.platform, mod.name, file_path.stat().st_size, now, str(exc), _kind_for_platform(mod.platform), now, root_dir, now),
             )
             conn.commit()
             summary.files.append(FileIngestResult(file_path, "failed", adapter=mod.name, error=str(exc)))
@@ -257,13 +269,13 @@ def ingest_path(
         cur = conn.execute(
             """
             INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, kind, last_seen_at, root_dir, first_seen_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'ok', 'frozen', ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 'ok', ?, ?, ?, ?)
             ON CONFLICT(sha256, adapter) DO UPDATE SET
                 status='ok', error=NULL, ingested_at=excluded.ingested_at,
                 last_seen_at=excluded.last_seen_at, root_dir=excluded.root_dir,
                 first_seen_at=COALESCE(source_files.first_seen_at, excluded.first_seen_at)
             """,
-            (str(file_path), sha, mod.platform, mod.name, file_path.stat().st_size, now, now, root_dir, now),
+            (str(file_path), sha, mod.platform, mod.name, file_path.stat().st_size, now, _kind_for_platform(mod.platform), now, root_dir, now),
         )
         source_file_id = cur.lastrowid or conn.execute(
             "SELECT id FROM source_files WHERE sha256 = ? AND adapter = ?", (sha, mod.name)

@@ -66,8 +66,8 @@ def guard_raw_exclusions(config: Config, path: Path, force: bool) -> None:
 
 
 def mark_kind(conn: sqlite3.Connection, path_or_root: str, kind: str) -> int:
-    if kind not in ("live", "frozen"):
-        raise ValueError(f"kind must be 'live' or 'frozen', got {kind!r}")
+    if kind not in ("live", "frozen", "server_side"):
+        raise ValueError(f"kind must be 'live', 'frozen', or 'server_side', got {kind!r}")
     cur = conn.execute(
         "UPDATE source_files SET kind = ? WHERE root_dir = ? OR path = ?",
         (kind, path_or_root, path_or_root),
