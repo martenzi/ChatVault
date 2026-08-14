@@ -121,7 +121,21 @@ def _session_title(events: list[dict]) -> str | None:
     return None
 
 
+def _is_subagent_transcript(path: Path) -> bool:
+    """Subagent transcripts (~/.claude/projects/<proj>/<parent-session-id>/subagents/agent-*.jsonl)
+    carry the SAME sessionId as their parent session's own top-level file —
+    verified against this machine's real files, not assumed. A naive
+    parse() keyed purely on sessionId would therefore emit two conversations
+    with the same native_id (parent + each subagent), which the loader then
+    flags as an ambiguous duplicate (uid gets a #dup- suffix) forever,
+    silently losing the subagent transcript's own real content (15-55+
+    assistant turns each, seen in practice) to a review queue no one
+    revisits. Detected structurally, not by filename pattern alone."""
+    return "subagents" in path.parts
+
+
 def parse(path: Path) -> Iterator[dict]:
+    is_subagent = _is_subagent_transcript(path)
     sessions: dict[str, list[dict]] = {}
     order: list[str] = []
     with path.open("rb") as fh:
@@ -163,14 +177,25 @@ def parse(path: Path) -> Iterator[dict]:
         cwd = next((e.get("cwd") for e in events if e.get("cwd")), None)
         project = Path(cwd).name if cwd else None
 
+        title = _session_title(events)
+        native_id = sid
+        raw_meta = {"sessionId": sid, "cwd": cwd}
+        if is_subagent:
+            # path.stem is the subagent's own filename (e.g.
+            # "agent-aa57f566aa5f109de"), globally unique on this machine —
+            # unlike sid, which the parent session file already claims.
+            native_id = f"{sid}#subagent-{path.stem}"
+            title = f"[subagent] {title}" if title else f"[subagent] {path.stem}"
+            raw_meta["parent_session_id"] = sid
+
         yield make_conversation(
             platform=platform,
-            native_id=sid,
-            title=_session_title(events),
+            native_id=native_id,
+            title=title,
             project=project,
             started_at=min(timestamps) if timestamps else None,
             ended_at=max(timestamps) if timestamps else None,
             source_path=str(path),
-            raw={"sessionId": sid, "cwd": cwd},
+            raw=raw_meta,
             messages=messages,
         )
