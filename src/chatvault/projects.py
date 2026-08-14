@@ -317,3 +317,76 @@ def rename(conn: sqlite3.Connection, project_id: int, new_name: str) -> None:
         raise ValueError(f"no project with id {project_id}")
     conn.execute("UPDATE projects SET name = ? WHERE id = ?", (new_name, project_id))
     conn.commit()
+
+
+@dataclass
+class ManualAssignmentReport:
+    assigned: int = 0
+    conversation_not_found: list[str] = field(default_factory=list)
+    project_not_found: list[str] = field(default_factory=list)
+    already_correct: int = 0
+
+
+def apply_manual_assignments(conn: sqlite3.Connection, assignments_path: str | Path) -> ManualAssignmentReport:
+    """Apply a JSON file of human-verified conversation -> project links —
+    the only path available for platforms like Grok where the export field
+    meant to carry this (conversation.workspace_id) is real but not
+    reliably populated for pre-existing conversations (see
+    docs/GROK_PROJECT_IDENTITY_2026-08-12.md §3). Never inferred from
+    titles or any other heuristic here — every entry in the file must
+    already carry a verified conversation_native_id and a
+    project_workspace_id (or project_name, resolved to a project row that
+    must already exist from parse_projects/load_project — this function
+    never creates a project row, only links to one that's already there).
+
+    Deliberately conservative: a conversation id that isn't found, or a
+    project that isn't found, is reported and skipped rather than
+    guessed at or silently ignored. Idempotent — safe to re-run after new
+    ingests or after adding more entries to the assignments file."""
+    data = json.loads(Path(assignments_path).read_text())
+    report = ManualAssignmentReport()
+
+    # Build a project lookup: prefer the stable workspace_id (native_id) key;
+    # fall back to name only when no workspace_id is given in the entry
+    # (i.e. the project itself has no known id yet, e.g. "job-hunter" above
+    # where the id wasn't captured from the screenshot batch).
+    projects_by_native_id = {
+        row["native_id"]: row["id"]
+        for row in conn.execute("SELECT id, native_id FROM projects WHERE platform = 'grok'").fetchall()
+        if row["native_id"]
+    }
+    projects_by_name = {
+        row["name"]: row["id"]
+        for row in conn.execute("SELECT id, name FROM projects WHERE platform = 'grok'").fetchall()
+    }
+
+    for entry in data.get("assignments", []):
+        conv_native_id = entry["conversation_native_id"]
+        conv_row = conn.execute(
+            "SELECT id FROM conversations WHERE platform = 'grok' AND native_id = ?", (conv_native_id,)
+        ).fetchone()
+        if conv_row is None:
+            report.conversation_not_found.append(conv_native_id)
+            continue
+
+        project_id = None
+        ws_id = entry.get("project_workspace_id")
+        if ws_id:
+            project_id = projects_by_native_id.get(ws_id)
+        if project_id is None:
+            project_id = projects_by_name.get(entry.get("project_name"))
+        if project_id is None:
+            report.project_not_found.append(entry.get("project_name") or ws_id or "?")
+            continue
+
+        current = conn.execute("SELECT project_id FROM conversations WHERE id = ?", (conv_row["id"],)).fetchone()
+        if current["project_id"] == project_id:
+            report.already_correct += 1
+            continue
+
+        conn.execute("UPDATE conversations SET project_id = ? WHERE id = ?", (project_id, conv_row["id"]))
+        _tag_conv(conn, conv_row["id"], "review/project-human-verified")
+        report.assigned += 1
+
+    conn.commit()
+    return report
