@@ -5,6 +5,8 @@
 **Revises:** `40_SPEC_second_brain_v0.md` §0 — the "same database" recommendation was under-argued
 
 > **Update, 2026-08-16 — schema + `promote`/`add`/`list`/`show`/`search` built, by explicit user decision to skip the "two weeks first" wait in §7 (irrelevant to this user's actual workflow).** `brain.sqlite` is live: `chatvault brain promote [--uid/--pick/--from-stash]`, `brain add`, `brain list`, `brain show`, `brain search`. Not built, still: `--extract`, `relate`, `supersede`, `confidence` workflows (§7 step 4), and the Datasette/MCP/launcher interfaces (§7 step 5). All §8 acceptance criteria relevant to this scope verified directly against a scratch copy of real production data — full detail: STATUS.md build log, 2026-08-16.
+>
+> **Update, 2026-08-16, later the same day — `db/brain.sqlite` is now the real, permanent file in production**, not just scratch-tested. Confirmed empty and ready for real `stash add`/`brain promote` usage; production `chatvault.sqlite` verified unaffected (`chatvault stats`/`verify`/integrity all unchanged). Full detail: STATUS.md build log.
 
 ---
 
