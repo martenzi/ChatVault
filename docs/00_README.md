@@ -25,6 +25,7 @@ docs/
 ├── 00–05   Orientation      ← start here, numbered = reading order
 ├── 10–11   Concepts         ← reference; how to think about a thing
 ├── 20–22   Open fixes        ← work not yet done
+├── 40–42   Next-phase specs  ← Second Brain, markdown reconciliation, Brain DB
 ├── 30      Dated notes      ← Q&A snapshots, freshness matters
 ├── specs/                   ← historical build specs (all delivered)
 ├── archive/                 ← superseded, do not act on
@@ -50,10 +51,14 @@ docs/
 - `11_CONCEPTS_neo4j_and_interfaces.md` — which interface when; what Neo4j is actually for
 
 ### Open fixes
-- `40_SPEC_second_brain_v0.md` *(2026-08-12)* — stash + brief. Parts A & B only, ~4h, Sonnet mid.
-- `05_INGESTION_LEDGER.md` §5 — add `chatvault ledger` command + `server_side` source kind. ~1h, Sonnet low.
+- `41_SPEC_markdown_reconciliation.md` *(2026-08-14)* — `md-scan`: find which scattered `.md` files are already in the vault. ~4–5h, Sonnet mid.
 
 Previously open, now done. The four that lived here (`20_FIX_project_identity.md`, `21_FIX_scope_consistency.md`, `22_FIX_tag_browsing_ux.md`, `20_FIX_naming_project_kinds.md`) are done — moved to `archive/` with resolution notes. `20_FIX_naming_project_kinds.md` (2026-08-12) renamed `projects.kind` vocabulary (`workspace`→`code_workspace`, `desktop`→`claude_project`, `scratch`→`no_project`), renamed the `claude_web` platform to `claude_desktop`, deleted the `not_found` tag, and added `v_model_coverage`. See `01_STATE_OF_PLAY.md` for what's still genuinely open (the `~/.claude/projects` ingestion question is real and unresolved, but it's a data-source gap, not a code fix, so it isn't a `FIX_*` doc).
+
+### Next-phase specs
+- `40_SPEC_second_brain_v0.md` — stash / brief / extract. **Parts A+B built 2026-08-16** (`chatvault stash`, `chatvault brief`); Parts C/C2/D/E remain a deliberate "use it for two weeks first" decision, not started.
+- `41_SPEC_markdown_reconciliation.md` — `md-scan`, four verdicts, non-destructive.
+- `42_SPEC_brain_db.md` — **the architecture decision.** Two layers: stash in ChatVault, a separate `brain.sqlite`. Revises `40_SPEC` §0. Layer 2 (the Brain DB itself) not started — its own build order puts it after two weeks of real Layer-1 usage.
 
 ### Notes
 - `30_NOTES_2026-08-10.md` — id vs uid, Datasette display, tagging workflow, venvs, missing platforms

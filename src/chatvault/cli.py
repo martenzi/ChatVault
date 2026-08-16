@@ -11,6 +11,7 @@ from rich.table import Table
 from chatvault import attachments as attachments_mod
 from chatvault import audit as audit_mod
 from chatvault import backup as backup_mod
+from chatvault import brief as brief_mod
 from chatvault import browse as browse_mod
 from chatvault import curation
 from chatvault import curation_io
@@ -27,6 +28,7 @@ from chatvault import projects as projects_mod
 from chatvault import reconcile as reconcile_mod
 from chatvault import search as search_mod
 from chatvault import sources as sources_mod
+from chatvault import stash as stash_mod
 from chatvault import tags as tags_mod
 from chatvault import verify as verify_mod
 from chatvault.config import load_config
@@ -41,6 +43,7 @@ sources_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Trac
 curation_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Export/import the curation layer (tags, annotations, exclusions, views).")
 attachments_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Browse and curate attachments.")
 projects_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Browse projects (Claude Projects, etc.).")
+stash_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Second Brain v0 — the deliberate keep gesture (docs/40_SPEC_second_brain_v0.md).")
 tag_app.add_typer(tag_rule_app, name="rule")
 app.add_typer(tag_app, name="tag")
 app.add_typer(view_app, name="view")
@@ -49,6 +52,7 @@ app.add_typer(sources_app, name="sources")
 app.add_typer(curation_app, name="curation")
 app.add_typer(attachments_app, name="attachments")
 app.add_typer(projects_app, name="projects")
+app.add_typer(stash_app, name="stash")
 console = Console()
 
 
@@ -207,6 +211,169 @@ def ledger(
         console.print(table)
     finally:
         conn.close()
+
+
+@stash_app.command("add")
+def stash_add(
+    pick: str = typer.Option(None, "--pick", help="Row number from the last `find` (exactly one)."),
+    uid: str = typer.Option(None, "--uid", help="Conversation uid, alternative to --pick."),
+    why: str = typer.Option(None, "--why", help="Required. Why this is worth keeping."),
+    kind: str = typer.Option(None, "--kind", help=f"One of {sorted(stash_mod.KINDS)}."),
+) -> None:
+    """Deliberate keep gesture — tags stash/ (+ stash/<kind>) and records
+    --why as an annotation. Refuses an empty --why (spec §2/§8)."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        if uid is None and pick is None:
+            console.print("[red]pass --uid or --pick <row>[/red]")
+            raise typer.Exit(code=1)
+        if pick is not None:
+            try:
+                conv_ids = browse_mod.resolve_pick(conn, config, pick)
+            except (browse_mod.StaleCacheError, ValueError) as exc:
+                console.print(f"[red]{exc}[/red]")
+                raise typer.Exit(code=1)
+            if len(conv_ids) != 1:
+                console.print("[red]`stash add --pick` takes exactly one row[/red]")
+                raise typer.Exit(code=1)
+            conv_id = conv_ids[0]
+        else:
+            row = conn.execute("SELECT id FROM v_conversations WHERE uid = ?", (uid,)).fetchone()
+            if row is None:
+                console.print(f"[red]no conversation with uid {uid!r}[/red]")
+                raise typer.Exit(code=1)
+            conv_id = row["id"]
+
+        try:
+            result = stash_mod.add(conn, conv_id, why, kind=kind)
+        except stash_mod.StashError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+    finally:
+        conn.close()
+    console.print(f"[green]stashed[/green] conv {result['conv_id']}" + (f" ({result['kind']})" if result["kind"] else ""))
+
+
+@stash_app.command("list")
+def stash_list(
+    kind: str = typer.Option(None, "--kind", help=f"Filter to one of {sorted(stash_mod.KINDS)}."),
+    since: str = typer.Option(None, "--since", help="ISO date — only entries stashed on/after this date."),
+) -> None:
+    config = load_config()
+    conn = connect(config)
+    try:
+        entries = stash_mod.list_all(conn, kind=kind, since=since)
+    finally:
+        conn.close()
+    if not entries:
+        console.print("[dim]stash is empty[/dim]")
+        return
+    table = Table(title="stash")
+    table.add_column("#", justify="right")
+    table.add_column("saved")
+    table.add_column("kind")
+    table.add_column("why")
+    table.add_column("source")
+    for e in entries:
+        source = f"{e.platform} · {(e.started_at or '')[:10] or '-'}"
+        table.add_row(str(e.n), e.saved_at[:10], e.kind or "-", e.why, source)
+    console.print(table)
+
+
+@stash_app.command("show")
+def stash_show(n: int = typer.Argument(..., help="Row number from `stash list` (full, unfiltered).")) -> None:
+    config = load_config()
+    conn = connect(config)
+    try:
+        try:
+            entry = stash_mod.get_entry(conn, n)
+        except stash_mod.StashError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+        row = conn.execute("SELECT * FROM v_conversations WHERE id = ?", (entry.conv_id,)).fetchone()
+        content = export_mod.render_profile(conn, row, profile="read")
+    finally:
+        conn.close()
+    header = (
+        f"why: {entry.why}\n"
+        f"kind: {entry.kind or '-'}\n"
+        f"saved: {entry.saved_at}\n"
+        f"source: {entry.platform} · {(entry.started_at or '')[:10] or '-'}\n"
+        f"uid: {entry.uid}\n"
+        + "-" * 40
+    )
+    full = f"{header}\n\n{content}"
+    if not sys.stdout.isatty():
+        console.print(full)
+    else:
+        import click
+
+        click.echo_via_pager(full)
+
+
+@stash_app.command("drop")
+def stash_drop(n: int = typer.Argument(..., help="Row number from `stash list` (full, unfiltered).")) -> None:
+    """Removes the stash tags + why note. The conversation itself is never
+    touched (spec §2/§8 — verify with `chatvault stats` before/after)."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        try:
+            result = stash_mod.drop(conn, n)
+        except stash_mod.StashError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+    finally:
+        conn.close()
+    console.print(
+        f"dropped conv {result['conv_id']} from stash "
+        f"({result['removed_tags']} tag link(s), {result['removed_notes']} note(s) removed; conversation untouched)"
+    )
+
+
+@app.command()
+def brief(
+    pick: str = typer.Option(..., "--pick", help="Row number(s) from `chatvault stash list`, e.g. '1' or '1,4'."),
+    out: Path = typer.Option(None, "--out", help="Write to this directory instead of stdout."),
+) -> None:
+    """Turns a stashed conversation into a self-contained context pack you
+    can paste or attach into a fresh AI conversation (docs/40_SPEC_second_brain_v0.md §3).
+    Reuses the `lean` export profile for the body — no second renderer.
+    --pick refers to `stash list`'s own numbering, not `find`'s — brief only
+    ever operates on stashed conversations, and stash list's numbering is
+    always fresh (never staled by the stash add that makes an item worth
+    briefing in the first place)."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        try:
+            conv_ids = stash_mod.resolve_pick(conn, pick)
+        except stash_mod.StashError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+        if not conv_ids:
+            console.print("[red]no rows resolved from --pick[/red]")
+            raise typer.Exit(code=1)
+
+        try:
+            content = brief_mod.render_many(conn, conv_ids)
+        except brief_mod.BriefError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+
+        if out is not None:
+            out.mkdir(parents=True, exist_ok=True)
+            fname = brief_mod.filename_for(conn, conv_ids)
+            path = out / fname
+            path.write_text(content)
+    finally:
+        conn.close()
+
+    if out is not None:
+        console.print(f"wrote {path}")
+    else:
+        console.print(content)
 
 
 @app.command()
