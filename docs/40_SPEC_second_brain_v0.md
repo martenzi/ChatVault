@@ -4,7 +4,9 @@
 **Written:** 2026-08-12
 **Read first:** `02_DECISIONS.md`, `10_CONCEPTS_label_tag_project.md`
 
-> **Update, 2026-08-16 — Parts A and B built, exactly as scoped in §7, and stopped there.** `chatvault stash add/list/show/drop` and `chatvault brief --pick` are live. No new table (as specified) — verified `chatvault init` reports "schema already up to date" against a scratch copy of production. Full detail: STATUS.md build log for 2026-08-16. Parts C/C2/D/E, `42_SPEC_brain_db.md`'s Brain DB, and `41_SPEC_markdown_reconciliation.md` remain explicitly not built, per this doc's own §7 sequencing ("use A+B for two weeks" before deciding).
+> **Update, 2026-08-16 — Parts A and B built, exactly as scoped in §7.** `chatvault stash add/list/show/drop` and `chatvault brief --pick` are live. No new table (as specified) — verified `chatvault init` reports "schema already up to date" against a scratch copy of production. Full detail: STATUS.md build log for 2026-08-16. Part C (`stash_items`), C2 (`extract`), D (`brain` Textual screen), E (`--summarise`), and `41_SPEC_markdown_reconciliation.md` remain not built.
+>
+> **Also 2026-08-16, later the same day — the Brain DB (`42_SPEC_brain_db.md`) schema + `promote`/`add`/`list`/`show`/`search` were built too, in the same task, by explicit user decision to skip the "use it two weeks first" wait this doc and `42_SPEC` both originally called for** (the user judged it irrelevant to their actual workflow). See `42_SPEC_brain_db.md`'s own update note and STATUS.md for detail. `42_SPEC`'s `--extract`/`relate`/`supersede`/`confidence` and its Datasette/MCP/launcher interfaces remain not built.
 
 ---
 

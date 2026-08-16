@@ -11,6 +11,8 @@ from rich.table import Table
 from chatvault import attachments as attachments_mod
 from chatvault import audit as audit_mod
 from chatvault import backup as backup_mod
+from chatvault import brain as brain_mod
+from chatvault import brain_db
 from chatvault import brief as brief_mod
 from chatvault import browse as browse_mod
 from chatvault import curation
@@ -44,6 +46,7 @@ curation_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Exp
 attachments_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Browse and curate attachments.")
 projects_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Browse projects (Claude Projects, etc.).")
 stash_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Second Brain v0 — the deliberate keep gesture (docs/40_SPEC_second_brain_v0.md).")
+brain_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Second Brain, Layer 2 — a separate, portable database of curated items (docs/42_SPEC_brain_db.md).")
 tag_app.add_typer(tag_rule_app, name="rule")
 app.add_typer(tag_app, name="tag")
 app.add_typer(view_app, name="view")
@@ -53,6 +56,7 @@ app.add_typer(curation_app, name="curation")
 app.add_typer(attachments_app, name="attachments")
 app.add_typer(projects_app, name="projects")
 app.add_typer(stash_app, name="stash")
+app.add_typer(brain_app, name="brain")
 console = Console()
 
 
@@ -374,6 +378,164 @@ def brief(
         console.print(f"wrote {path}")
     else:
         console.print(content)
+
+
+@brain_app.command("promote")
+def brain_promote(
+    uid: str = typer.Option(None, "--uid", help="Conversation uid to promote."),
+    pick: str = typer.Option(None, "--pick", help="Row number from the last `find` (exactly one) — alternative to --uid."),
+    why: str = typer.Option(None, "--why", help="Required, unless --from-stash (read from each stash entry's own why)."),
+    kind: str = typer.Option("conversation", "--kind", help=f"One of {sorted(brain_mod.KINDS)}."),
+    from_stash: bool = typer.Option(False, "--from-stash", help="Promote every stash/-tagged conversation not already promoted."),
+) -> None:
+    """Snapshots a vault conversation into brain.sqlite: reads it read-only,
+    renders with `lean`, freezes it as an item, marks the vault conversation
+    stash/promoted (docs/42_SPEC_brain_db.md §4)."""
+    config = load_config()
+    vault_conn = connect(config)
+    brain_conn = brain_db.connect(config)
+    vault_ro = brain_db.connect_vault_readonly(config.db_path)
+    try:
+        if from_stash:
+            results = brain_mod.promote_from_stash(brain_conn, vault_ro, vault_conn)
+            if not results:
+                console.print("[dim]nothing to promote — no stash/ items pending[/dim]")
+                return
+            for r in results:
+                verb = "already promoted:" if r["action"] == "already_promoted" else "promoted:"
+                console.print(f"[green]{verb}[/green] item {r['item_id']} — {r['title']}")
+            return
+
+        if uid is None and pick is None:
+            console.print("[red]pass --uid, --pick, or --from-stash[/red]")
+            raise typer.Exit(code=1)
+        if pick is not None:
+            try:
+                conv_ids = browse_mod.resolve_pick(vault_conn, config, pick)
+            except (browse_mod.StaleCacheError, ValueError) as exc:
+                console.print(f"[red]{exc}[/red]")
+                raise typer.Exit(code=1)
+            if len(conv_ids) != 1:
+                console.print("[red]`brain promote --pick` takes exactly one row[/red]")
+                raise typer.Exit(code=1)
+            row = vault_conn.execute("SELECT uid FROM v_conversations WHERE id = ?", (conv_ids[0],)).fetchone()
+            uid = row["uid"]
+
+        try:
+            result = brain_mod.promote(brain_conn, vault_ro, vault_conn, uid, why, kind=kind)
+        except brain_mod.BrainError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+    finally:
+        vault_ro.close()
+        brain_conn.close()
+        vault_conn.close()
+    verb = "already promoted as" if result["action"] == "already_promoted" else "promoted as"
+    console.print(f"[green]{verb}[/green] item {result['item_id']} — {result['title']}")
+
+
+@brain_app.command("add")
+def brain_add(
+    title: str = typer.Argument(...),
+    why: str = typer.Option(None, "--why", help="Required."),
+    kind: str = typer.Option("note", "--kind", help=f"One of {sorted(brain_mod.KINDS)}."),
+    body_file: Path = typer.Option(None, "--body-file", help="Markdown file to use as the item body."),
+) -> None:
+    """Manual item — no vault involved (spec §4)."""
+    config = load_config()
+    brain_conn = brain_db.connect(config)
+    try:
+        body = body_file.read_text() if body_file is not None else None
+        try:
+            result = brain_mod.add(brain_conn, title, why, kind=kind, body=body)
+        except brain_mod.BrainError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+    finally:
+        brain_conn.close()
+    console.print(f"[green]added[/green] item {result['item_id']} — {result['title']}")
+
+
+@brain_app.command("list")
+def brain_list(
+    kind: str = typer.Option(None, "--kind", help=f"One of {sorted(brain_mod.KINDS)}."),
+    tag: str = typer.Option(None, "--tag", help="Exact tag name, or a prefix ending in '/**'."),
+    confidence: str = typer.Option(None, "--confidence", help="verified | probable | unverified."),
+) -> None:
+    config = load_config()
+    brain_conn = brain_db.connect(config)
+    try:
+        entries = brain_mod.list_all(brain_conn, kind=kind, tag=tag, confidence=confidence)
+    finally:
+        brain_conn.close()
+    if not entries:
+        console.print("[dim]brain is empty[/dim]")
+        return
+    table = Table(title="brain")
+    table.add_column("#", justify="right")
+    table.add_column("kind")
+    table.add_column("title")
+    table.add_column("why")
+    table.add_column("confidence")
+    table.add_column("saved")
+    for e in entries:
+        table.add_row(str(e.n), e.kind, e.title, e.why, e.confidence or "-", e.created_at[:10])
+    console.print(table)
+
+
+@brain_app.command("show")
+def brain_show(n: int = typer.Argument(..., help="Row number from `brain list` (full, unfiltered).")) -> None:
+    config = load_config()
+    brain_conn = brain_db.connect(config)
+    try:
+        try:
+            entry = brain_mod.get_entry(brain_conn, n)
+        except brain_mod.BrainError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+        row = brain_mod.get_item_row(brain_conn, entry.item_id)
+    finally:
+        brain_conn.close()
+    header = (
+        f"why: {row['why']}\n"
+        f"kind: {row['kind']}\n"
+        f"confidence: {row['confidence'] or '-'}\n"
+        f"status: {row['status']}\n"
+        f"source: {row['source_uid'] or '-'} ({row['source_kind'] or '-'})\n"
+        f"saved: {row['created_at']}\n"
+        + "-" * 40
+    )
+    full = f"{header}\n\n# {row['title']}\n\n{row['body'] or '(no body)'}"
+    if not sys.stdout.isatty():
+        console.print(full)
+    else:
+        import click
+
+        click.echo_via_pager(full)
+
+
+@brain_app.command("search")
+def brain_search(
+    query: str = typer.Argument(...),
+    limit: int = typer.Option(20, "--limit"),
+) -> None:
+    config = load_config()
+    brain_conn = brain_db.connect(config)
+    try:
+        rows = brain_mod.search(brain_conn, query, limit=limit)
+    finally:
+        brain_conn.close()
+    if not rows:
+        console.print("[dim]no matches[/dim]")
+        return
+    table = Table(title=f"brain search: {query!r}")
+    table.add_column("id", justify="right")
+    table.add_column("kind")
+    table.add_column("title")
+    table.add_column("why")
+    for r in rows:
+        table.add_row(str(r["id"]), r["kind"], r["title"], r["why"])
+    console.print(table)
 
 
 @app.command()

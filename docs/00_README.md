@@ -58,7 +58,7 @@ Previously open, now done. The four that lived here (`20_FIX_project_identity.md
 ### Next-phase specs
 - `40_SPEC_second_brain_v0.md` — stash / brief / extract. **Parts A+B built 2026-08-16** (`chatvault stash`, `chatvault brief`); Parts C/C2/D/E remain a deliberate "use it for two weeks first" decision, not started.
 - `41_SPEC_markdown_reconciliation.md` — `md-scan`, four verdicts, non-destructive.
-- `42_SPEC_brain_db.md` — **the architecture decision.** Two layers: stash in ChatVault, a separate `brain.sqlite`. Revises `40_SPEC` §0. Layer 2 (the Brain DB itself) not started — its own build order puts it after two weeks of real Layer-1 usage.
+- `42_SPEC_brain_db.md` — **the architecture decision.** Two layers: stash in ChatVault, a separate `brain.sqlite`. Revises `40_SPEC` §0. **Layer 2 schema + `promote`/`add`/`list`/`show`/`search` built 2026-08-16** (`chatvault brain ...`); `--extract`/`relate`/`supersede`/`confidence` and the Datasette/MCP/launcher interfaces not started.
 
 ### Notes
 - `30_NOTES_2026-08-10.md` — id vs uid, Datasette display, tagging workflow, venvs, missing platforms

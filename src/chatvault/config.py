@@ -38,6 +38,15 @@ class Config:
         return self.db_dir / "chatvault.sqlite"
 
     @property
+    def brain_path(self) -> Path:
+        """docs/42_SPEC_brain_db.md — a separate, small, portable database.
+        Deliberately a sibling of chatvault.sqlite, not nested inside it or
+        derived from it: renaming/moving chatvault.sqlite never affects this
+        file, and copying this one file alone is enough to carry the brain
+        to another machine (acceptance criteria: self-sufficiency, portability)."""
+        return self.db_dir / "brain.sqlite"
+
+    @property
     def exports_dir(self) -> Path:
         return self.root / "exports"
 
