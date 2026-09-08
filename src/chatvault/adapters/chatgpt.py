@@ -93,6 +93,29 @@ def _blocks_from_message_content(content: dict) -> list[dict]:
         text = content.get("content") or ""
         return [make_block(0, "thinking", text, raw=content)] if text else []
 
+    # docs/audit-shapes/chatgpt-unknown.md: all 6 `unknown` blocks on this
+    # platform share one shape — a bare `{id, text}` dict with no
+    # `content_type` at all (report's only shape signature, line 12), so none
+    # of the `ct ==` branches above ever match and every one of these falls
+    # through. `$.text` is *always* empty across all 6 real occurrences
+    # (report's "Zero-volume leaf paths" table, line 28); `$.id` is just a
+    # 36-char UUID (report line 22) — a message/part identifier, not real
+    # content. There is no content-bearing leaf to promote `text` from, so
+    # per spec §4.4 rule 2 this correctly stays `unknown` with `text=""`
+    # rather than fabricating a label. Verified live against production
+    # (`chatvault audit-shapes --platform chatgpt --type unknown`): still
+    # exactly this one shape, still always-empty `text`.
+    #
+    # Defensive, not a guess: if this bare `{id, text}` shape ever DOES carry
+    # a non-empty `text` (a future export, or a record this audit didn't
+    # see), that field is literally named `text` and should be read as real
+    # dialogue rather than silently dropped into another empty `unknown`.
+    if isinstance(content.get("id"), str) and "text" in content and set(content.keys()) <= {"id", "text"}:
+        bare_text = content.get("text") or ""
+        if bare_text:
+            return [make_block(0, "text", bare_text, raw=content)]
+        return [make_block(0, "unknown", "", raw=content)]
+
     return [make_block(0, "unknown", "", raw=content)]
 
 

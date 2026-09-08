@@ -58,8 +58,9 @@
 ## A5. Antigravity
 | | |
 |---|---|
-| **Storage** | Raw `.pb`, no full JSONL pipeline built |
-| **Status** | ⬜ **OPEN** — the only editor never completed |
+| **Storage** | Raw `.pb` (44 files, 54.3 MB) — confirmed genuinely encrypted 2026-08-14 (37% printable, no readable strings, same signature Cascade had pre-decryption). No key ever found or searched for, unlike Windsurf. |
+| **Also found 2026-08-14** | 7 of 30 `brain/<uuid>` session folders carry a separate, plaintext `.system_generated/logs/overview.txt` — a full session log Antigravity itself writes. 3 already converted to readable transcripts by the user's own tool; **4 more have the same raw material sitting unconverted** — the cheapest real recovery path available, no new tooling needed. |
+| **Status** | ⬜ **OPEN** — the only editor never completed. Full investigation: `history-r/2026-08-14_ANTIGRAVITY_STATUS.md` |
 
 ## A6. Cross-editor: workspace identity
 | | |

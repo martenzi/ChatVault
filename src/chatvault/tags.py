@@ -324,6 +324,56 @@ def flag_model_unknown(conn: sqlite3.Connection, conv_ids: list[int]) -> int:
     return applied
 
 
+def flag_shape_unclear(conn: sqlite3.Connection, conv_ids: list[int]) -> int:
+    """Applies review/shape-unclear (docs/50_SPEC_ingestion_fidelity_v1.md
+    §4.4 rule 2 / §7.6) to every conversation among `conv_ids` that still
+    has at least one `unknown`-typed block after ingest.
+
+    Same shape as flag_model_unknown() just above: a plain attribute check
+    over already-inserted rows (blocks.type = 'unknown'), not a blocks
+    content-pattern match, so it runs as its own post-load pass in
+    ingest.py rather than through the generic tag_rules engine. This is the
+    query-side half of the "flag, don't guess" contract (Decision D7): an
+    adapter that cannot confidently classify a shape leaves the block
+    `unknown` and populates its text with the richest available content
+    (see e.g. adapters/vscode_legacy.py's `_blocks_for_result()` fallback
+    branch) instead of inventing a type — this function is what turns that
+    into a reviewable tag, platform-agnostically, so future adapters get it
+    for free without each one needing its own CIR-level tagging hook."""
+    if not conv_ids:
+        return 0
+    placeholders = ",".join("?" * len(conv_ids))
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT c.id
+        FROM conversations c
+        JOIN messages m ON m.conv_id = c.id
+        JOIN blocks b ON b.msg_id = m.id
+        WHERE b.type = 'unknown' AND c.id IN ({placeholders})
+        """,  # noqa: S608
+        conv_ids,
+    ).fetchall()
+    if not rows:
+        return 0
+
+    tag_id = _get_or_create_tag(conn, "review/shape-unclear")
+    now = _now()
+    applied = 0
+    for row in rows:
+        cur = conn.execute(
+            """
+            INSERT INTO tag_links (tag_id, target_type, target_id, source, created_at)
+            VALUES (?, 'conversation', ?, 'rule', ?)
+            ON CONFLICT(tag_id, target_type, target_id) DO NOTHING
+            """,
+            (tag_id, row["id"], now),
+        )
+        if cur.rowcount:
+            applied += 1
+    conn.commit()
+    return applied
+
+
 # ─────────────── tag import-tree from YAML (Tagging Workflow §2, §8 item 1) ───────────────
 
 

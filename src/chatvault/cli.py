@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import date
 from pathlib import Path
 
 import typer
@@ -11,8 +12,7 @@ from rich.table import Table
 from chatvault import attachments as attachments_mod
 from chatvault import audit as audit_mod
 from chatvault import backup as backup_mod
-from chatvault import brain as brain_mod
-from chatvault import brain_db
+from chatvault.brain_cli import brain_app
 from chatvault import brief as brief_mod
 from chatvault import browse as browse_mod
 from chatvault import curation
@@ -25,10 +25,12 @@ from chatvault import graph as graph_mod
 from chatvault import ingest as ingest_mod
 from chatvault import inventory as inventory_mod
 from chatvault import ledger as ledger_mod
+from chatvault import platforms as platforms_mod
 from chatvault import portfolio as portfolio_mod
 from chatvault import projects as projects_mod
 from chatvault import reconcile as reconcile_mod
 from chatvault import search as search_mod
+from chatvault import shapes as shapes_mod
 from chatvault import sources as sources_mod
 from chatvault import stash as stash_mod
 from chatvault import tags as tags_mod
@@ -46,17 +48,16 @@ curation_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Exp
 attachments_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Browse and curate attachments.")
 projects_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Browse projects (Claude Projects, etc.).")
 stash_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Second Brain v0 — the deliberate keep gesture (docs/40_SPEC_second_brain_v0.md).")
-brain_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Second Brain, Layer 2 — a separate, portable database of curated items (docs/42_SPEC_brain_db.md).")
 tag_app.add_typer(tag_rule_app, name="rule")
-app.add_typer(tag_app, name="tag")
-app.add_typer(view_app, name="view")
-app.add_typer(graph_app, name="graph")
-app.add_typer(sources_app, name="sources")
-app.add_typer(curation_app, name="curation")
-app.add_typer(attachments_app, name="attachments")
-app.add_typer(projects_app, name="projects")
-app.add_typer(stash_app, name="stash")
-app.add_typer(brain_app, name="brain")
+app.add_typer(tag_app, name="tag", rich_help_panel="Tags & Views")
+app.add_typer(view_app, name="view", rich_help_panel="Tags & Views")
+app.add_typer(graph_app, name="graph", rich_help_panel="Neo4j Graph")
+app.add_typer(sources_app, name="sources", rich_help_panel="Getting Data In")
+app.add_typer(curation_app, name="curation", rich_help_panel="Curation & Data Quality")
+app.add_typer(attachments_app, name="attachments", rich_help_panel="Attachments")
+app.add_typer(projects_app, name="projects", rich_help_panel="Projects")
+app.add_typer(stash_app, name="stash", rich_help_panel="Second Brain v0 (stash)")
+app.add_typer(brain_app, name="brain", rich_help_panel="Second Brain v2 (Brain)")
 console = Console()
 
 
@@ -77,9 +78,9 @@ def _auto_backup(config, label: str) -> None:
     console.print(f"[dim]auto-backup: {info.path.name}[/dim]")
 
 
-@app.command()
+@app.command(rich_help_panel="System & Health")
 def doctor() -> None:
-    """Environment preflight: sqlite version, FTS5, neo4j reachability."""
+    """Environment preflight: sqlite version, FTS5, neo4j reachability. Prints a status table."""
     config = load_config()
     results = doctor_mod.run_all(config)
     table = Table(title="chatvault doctor")
@@ -101,9 +102,9 @@ def doctor() -> None:
         raise typer.Exit(code=1)
 
 
-@app.command()
+@app.command(rich_help_panel="System & Health")
 def init() -> None:
-    """Create vault directories and run migrations."""
+    """Create vault directories and run migrations. Prints status lines only."""
     config = load_config()
     for d in [config.raw_dir, config.db_dir, config.exports_dir, config.neo4j_dir]:
         d.mkdir(parents=True, exist_ok=True)
@@ -118,9 +119,9 @@ def init() -> None:
     console.print(f"database: {config.db_path}")
 
 
-@app.command()
+@app.command(rich_help_panel="System & Health")
 def backup(
-    out: Path = typer.Option(None, "--out", help="Backup directory (default: <vault>/db/backups/)."),
+    out: Path = typer.Option(None, "--out", help="Backup directory (default: the vault's db/backups/)."),
     label: str = typer.Option(None, "--label"),
     list_: bool = typer.Option(False, "--list"),
     restore: Path = typer.Option(None, "--restore", help="Backup file to restore from."),
@@ -129,7 +130,7 @@ def backup(
     prune: bool = typer.Option(False, "--prune"),
     keep: int = typer.Option(None, "--keep", help="With --prune, how many recent backups to keep."),
 ) -> None:
-    """SQLite Online Backup API + zstd/gzip compression. Never a plain file copy."""
+    """SQLite Online Backup API + zstd/gzip compression. Never a plain file copy. Prints one status line; --list prints a table."""
     config = load_config()
 
     if list_:
@@ -170,7 +171,7 @@ def backup(
     console.print(f"wrote {info.path} ({_human_bytes(info.bytes)}, {info.conversation_count} conversations, {info.tag_count} tags)")
 
 
-@app.command()
+@app.command(rich_help_panel="Getting Data In")
 def ledger(
     markdown: Path = typer.Option(None, "--markdown", help="Regenerate this doc's '## 1. What's ingested' section in place (e.g. docs/05_INGESTION_LEDGER.md)."),
     stale: bool = typer.Option(False, "--stale", help="List server_side sources not re-exported in --days days."),
@@ -178,7 +179,7 @@ def ledger(
 ) -> None:
     """What's in the vault, live from source_files — see docs/05_INGESTION_LEDGER.md §5.
     No flags: print the table. --markdown: regenerate a doc's ledger section.
-    --stale: which server-side exports (claude_desktop/chatgpt/grok/gemini/deepseek) need refreshing."""
+    --stale: which server-side exports (claude_desktop/chatgpt/grok/gemini/deepseek) need refreshing. Prints a table; --markdown writes to a doc file instead."""
     config = load_config()
     conn = connect(config)
     try:
@@ -224,13 +225,13 @@ def stash_add(
     why: str = typer.Option(None, "--why", help="Required. Why this is worth keeping."),
     kind: str = typer.Option(None, "--kind", help=f"One of {sorted(stash_mod.KINDS)}."),
 ) -> None:
-    """Deliberate keep gesture — tags stash/ (+ stash/<kind>) and records
-    --why as an annotation. Refuses an empty --why (spec §2/§8)."""
+    """Deliberate keep gesture — tags stash/ (plus a stash/kind sub-tag, if --kind is given) and records
+    --why as an annotation. Refuses an empty --why (spec §2/§8). Prints one status line."""
     config = load_config()
     conn = connect(config)
     try:
         if uid is None and pick is None:
-            console.print("[red]pass --uid or --pick <row>[/red]")
+            console.print("[red]pass --uid or --pick, with a row number[/red]")
             raise typer.Exit(code=1)
         if pick is not None:
             try:
@@ -264,6 +265,8 @@ def stash_list(
     kind: str = typer.Option(None, "--kind", help=f"Filter to one of {sorted(stash_mod.KINDS)}."),
     since: str = typer.Option(None, "--since", help="ISO date — only entries stashed on/after this date."),
 ) -> None:
+    """The full stash, newest first. Exploratory — no arguments required.
+    Row numbers are fresh every call, for `stash show`/`drop`/`brief --pick`. Prints a table."""
     config = load_config()
     conn = connect(config)
     try:
@@ -287,6 +290,8 @@ def stash_list(
 
 @stash_app.command("show")
 def stash_show(n: int = typer.Argument(..., help="Row number from `stash list` (full, unfiltered).")) -> None:
+    """Reads one stashed conversation in full (`read` profile), with the
+    why/kind/source header stash keeps on top. Pages the full text (or prints raw if piped)."""
     config = load_config()
     conn = connect(config)
     try:
@@ -319,7 +324,7 @@ def stash_show(n: int = typer.Argument(..., help="Row number from `stash list` (
 @stash_app.command("drop")
 def stash_drop(n: int = typer.Argument(..., help="Row number from `stash list` (full, unfiltered).")) -> None:
     """Removes the stash tags + why note. The conversation itself is never
-    touched (spec §2/§8 — verify with `chatvault stats` before/after)."""
+    touched (spec §2/§8 — verify with `chatvault stats` before/after). Prints one status line."""
     config = load_config()
     conn = connect(config)
     try:
@@ -336,18 +341,10 @@ def stash_drop(n: int = typer.Argument(..., help="Row number from `stash list` (
     )
 
 
-@app.command()
-def brief(
-    pick: str = typer.Option(..., "--pick", help="Row number(s) from `chatvault stash list`, e.g. '1' or '1,4'."),
-    out: Path = typer.Option(None, "--out", help="Write to this directory instead of stdout."),
-) -> None:
-    """Turns a stashed conversation into a self-contained context pack you
-    can paste or attach into a fresh AI conversation (docs/40_SPEC_second_brain_v0.md §3).
-    Reuses the `lean` export profile for the body — no second renderer.
-    --pick refers to `stash list`'s own numbering, not `find`'s — brief only
-    ever operates on stashed conversations, and stash list's numbering is
-    always fresh (never staled by the stash add that makes an item worth
-    briefing in the first place)."""
+def _pack_impl(pick: str, out: Path | None) -> None:
+    """Shared by `pack` and the hidden `brief` alias
+    (docs/51_SPEC_brain_parity_and_naming.md §1.3/§1.5) — pure string
+    assembly (why + source reference + rendered body), no AI model."""
     config = load_config()
     conn = connect(config)
     try:
@@ -380,171 +377,41 @@ def brief(
         console.print(content)
 
 
-@brain_app.command("promote")
-def brain_promote(
-    uid: str = typer.Option(None, "--uid", help="Conversation uid to promote."),
-    pick: str = typer.Option(None, "--pick", help="Row number from the last `find` (exactly one) — alternative to --uid."),
-    why: str = typer.Option(None, "--why", help="Required, unless --from-stash (read from each stash entry's own why)."),
-    kind: str = typer.Option("conversation", "--kind", help=f"One of {sorted(brain_mod.KINDS)}."),
-    from_stash: bool = typer.Option(False, "--from-stash", help="Promote every stash/-tagged conversation not already promoted."),
+@app.command(rich_help_panel="Exporting")
+def pack(
+    pick: str = typer.Option(..., "--pick", help="Row number(s) from `chatvault stash list`, e.g. '1' or '1,4'."),
+    out: Path = typer.Option(None, "--out", help="Write to this directory instead of stdout."),
 ) -> None:
-    """Snapshots a vault conversation into brain.sqlite: reads it read-only,
-    renders with `lean`, freezes it as an item, marks the vault conversation
-    stash/promoted (docs/42_SPEC_brain_db.md §4)."""
-    config = load_config()
-    vault_conn = connect(config)
-    brain_conn = brain_db.connect(config)
-    vault_ro = brain_db.connect_vault_readonly(config.db_path)
-    try:
-        if from_stash:
-            results = brain_mod.promote_from_stash(brain_conn, vault_ro, vault_conn)
-            if not results:
-                console.print("[dim]nothing to promote — no stash/ items pending[/dim]")
-                return
-            for r in results:
-                verb = "already promoted:" if r["action"] == "already_promoted" else "promoted:"
-                console.print(f"[green]{verb}[/green] item {r['item_id']} — {r['title']}")
-            return
-
-        if uid is None and pick is None:
-            console.print("[red]pass --uid, --pick, or --from-stash[/red]")
-            raise typer.Exit(code=1)
-        if pick is not None:
-            try:
-                conv_ids = browse_mod.resolve_pick(vault_conn, config, pick)
-            except (browse_mod.StaleCacheError, ValueError) as exc:
-                console.print(f"[red]{exc}[/red]")
-                raise typer.Exit(code=1)
-            if len(conv_ids) != 1:
-                console.print("[red]`brain promote --pick` takes exactly one row[/red]")
-                raise typer.Exit(code=1)
-            row = vault_conn.execute("SELECT uid FROM v_conversations WHERE id = ?", (conv_ids[0],)).fetchone()
-            uid = row["uid"]
-
-        try:
-            result = brain_mod.promote(brain_conn, vault_ro, vault_conn, uid, why, kind=kind)
-        except brain_mod.BrainError as exc:
-            console.print(f"[red]{exc}[/red]")
-            raise typer.Exit(code=1)
-    finally:
-        vault_ro.close()
-        brain_conn.close()
-        vault_conn.close()
-    verb = "already promoted as" if result["action"] == "already_promoted" else "promoted as"
-    console.print(f"[green]{verb}[/green] item {result['item_id']} — {result['title']}")
+    """Assemble a self-contained context pack for one or more stashed
+    conversations: your `why`, the source reference, and the rendered
+    conversation. Scripted: no AI model is used. Intended for pasting into
+    another AI or reading on its own. Reuses the `lean` export profile for
+    the body — no second renderer. --pick refers to `stash list`'s own
+    numbering, not `find`'s — pack only ever operates on stashed
+    conversations, and stash list's numbering is always fresh (never staled
+    by the stash add that makes an item worth packing in the first place).
+    Prints to stdout, or writes a file with --out."""
+    _pack_impl(pick, out)
 
 
-@brain_app.command("add")
-def brain_add(
-    title: str = typer.Argument(...),
-    why: str = typer.Option(None, "--why", help="Required."),
-    kind: str = typer.Option("note", "--kind", help=f"One of {sorted(brain_mod.KINDS)}."),
-    body_file: Path = typer.Option(None, "--body-file", help="Markdown file to use as the item body."),
+@app.command(hidden=True)
+def brief(
+    pick: str = typer.Option(..., "--pick"),
+    out: Path = typer.Option(None, "--out"),
 ) -> None:
-    """Manual item — no vault involved (spec §4)."""
-    config = load_config()
-    brain_conn = brain_db.connect(config)
-    try:
-        body = body_file.read_text() if body_file is not None else None
-        try:
-            result = brain_mod.add(brain_conn, title, why, kind=kind, body=body)
-        except brain_mod.BrainError as exc:
-            console.print(f"[red]{exc}[/red]")
-            raise typer.Exit(code=1)
-    finally:
-        brain_conn.close()
-    console.print(f"[green]added[/green] item {result['item_id']} — {result['title']}")
+    """Deprecated — use `chatvault pack`."""
+    print("note: 'chatvault brief' is now 'chatvault pack' — the old name still works for now.", file=sys.stderr)
+    _pack_impl(pick, out)
 
 
-@brain_app.command("list")
-def brain_list(
-    kind: str = typer.Option(None, "--kind", help=f"One of {sorted(brain_mod.KINDS)}."),
-    tag: str = typer.Option(None, "--tag", help="Exact tag name, or a prefix ending in '/**'."),
-    confidence: str = typer.Option(None, "--confidence", help="verified | probable | unverified."),
-) -> None:
-    config = load_config()
-    brain_conn = brain_db.connect(config)
-    try:
-        entries = brain_mod.list_all(brain_conn, kind=kind, tag=tag, confidence=confidence)
-    finally:
-        brain_conn.close()
-    if not entries:
-        console.print("[dim]brain is empty[/dim]")
-        return
-    table = Table(title="brain")
-    table.add_column("#", justify="right")
-    table.add_column("kind")
-    table.add_column("title")
-    table.add_column("why")
-    table.add_column("confidence")
-    table.add_column("saved")
-    for e in entries:
-        table.add_row(str(e.n), e.kind, e.title, e.why, e.confidence or "-", e.created_at[:10])
-    console.print(table)
 
-
-@brain_app.command("show")
-def brain_show(n: int = typer.Argument(..., help="Row number from `brain list` (full, unfiltered).")) -> None:
-    config = load_config()
-    brain_conn = brain_db.connect(config)
-    try:
-        try:
-            entry = brain_mod.get_entry(brain_conn, n)
-        except brain_mod.BrainError as exc:
-            console.print(f"[red]{exc}[/red]")
-            raise typer.Exit(code=1)
-        row = brain_mod.get_item_row(brain_conn, entry.item_id)
-    finally:
-        brain_conn.close()
-    header = (
-        f"why: {row['why']}\n"
-        f"kind: {row['kind']}\n"
-        f"confidence: {row['confidence'] or '-'}\n"
-        f"status: {row['status']}\n"
-        f"source: {row['source_uid'] or '-'} ({row['source_kind'] or '-'})\n"
-        f"saved: {row['created_at']}\n"
-        + "-" * 40
-    )
-    full = f"{header}\n\n# {row['title']}\n\n{row['body'] or '(no body)'}"
-    if not sys.stdout.isatty():
-        console.print(full)
-    else:
-        import click
-
-        click.echo_via_pager(full)
-
-
-@brain_app.command("search")
-def brain_search(
-    query: str = typer.Argument(...),
-    limit: int = typer.Option(20, "--limit"),
-) -> None:
-    config = load_config()
-    brain_conn = brain_db.connect(config)
-    try:
-        rows = brain_mod.search(brain_conn, query, limit=limit)
-    finally:
-        brain_conn.close()
-    if not rows:
-        console.print("[dim]no matches[/dim]")
-        return
-    table = Table(title=f"brain search: {query!r}")
-    table.add_column("id", justify="right")
-    table.add_column("kind")
-    table.add_column("title")
-    table.add_column("why")
-    for r in rows:
-        table.add_row(str(r["id"]), r["kind"], r["title"], r["why"])
-    console.print(table)
-
-
-@app.command()
+@app.command(rich_help_panel="Getting Data In")
 def inventory(
     directory: Path = typer.Argument(None, exists=False, file_okay=False, help="Directory to scan (default: $CHATVAULT_ROOT/raw). Read-only."),
     deep: bool = typer.Option(False, "--deep", help="Parse file contents fully for accurate conversation counts."),
     force: bool = typer.Option(False, "--force", help="Allow scanning raw_exclusions/ directly."),
 ) -> None:
-    """Scan a directory, detect platform + counts. Makes NO writes."""
+    """Scan a directory, detect platform + counts. Makes NO writes. Prints a table."""
     config = load_config()
     directory = directory or config.raw_dir
     if not directory.exists():
@@ -579,7 +446,7 @@ def inventory(
     console.print(f"total: {total_files} file(s), {_human_bytes(total_bytes)}")
 
 
-@app.command()
+@app.command(rich_help_panel="Getting Data In")
 def ingest(
     path: Path = typer.Argument(None, exists=False, help="File or directory to ingest (default: $CHATVAULT_ROOT/raw)."),
     adapter: str = typer.Option(None, "--adapter", help="Force a specific adapter instead of auto-detecting."),
@@ -588,7 +455,7 @@ def ingest(
     reprocess: bool = typer.Option(False, "--reprocess", help="Bypass the file-level dedup and re-parse already-seen files. Existing conversations still resolve as noop by content_hash — this is for backfilling metadata an adapter fix now extracts (e.g. attachments) without ever duplicating rows."),
     embed: bool = typer.Option(True, "--embed/--no-embed", help="Embed newly inserted/superseded conversations for semantic search (spec: 'incrementally on new ingests'). Best-effort — an unreachable Ollama server is reported, not fatal."),
 ) -> None:
-    """Ingest RAW export file(s) into SQLite. Idempotent — safe to re-run."""
+    """Ingest RAW export file(s) into SQLite. Idempotent — safe to re-run. Prints a table plus totals."""
     config = load_config()
     path = path or config.raw_dir
     if not path.exists():
@@ -612,6 +479,7 @@ def ingest(
     table.add_column("inserted", justify="right")
     table.add_column("noop", justify="right")
     table.add_column("superseded", justify="right")
+    table.add_column("reprocessed", justify="right")
     table.add_column("flagged", justify="right")
 
     for f in summary.files:
@@ -622,6 +490,7 @@ def ingest(
             str(f.inserted),
             str(f.noop),
             str(f.superseded),
+            str(f.reprocessed),
             str(f.flagged),
         )
     console.print(table)
@@ -631,9 +500,10 @@ def ingest(
             console.print(f"[red]{f.path}: {f.error}[/red]")
 
     totals = summary.totals
+    reprocessed = sum(f.reprocessed for f in summary.files)
     console.print(
         f"totals: inserted={totals['inserted']} noop={totals['noop']} "
-        f"superseded={totals['superseded']} flagged={totals['flagged']}"
+        f"superseded={totals['superseded']} reprocessed={reprocessed} flagged={totals['flagged']}"
     )
     if totals["flagged"]:
         console.print("[yellow]Some conversations were flagged as ambiguous duplicates — see `chatvault dedupe --report`.[/yellow]")
@@ -647,7 +517,7 @@ def ingest(
             )
 
 
-@app.command()
+@app.command(rich_help_panel="Getting Data In")
 def reconcile(
     root: list[str] = typer.Option(None, "--root", help="Limit to specific tracked root_dir(s). Default: all tracked roots in scope."),
     kind: str = typer.Option("live", "--kind", help="live | frozen | all. Default 'live' — frozen sources are archived on purpose."),
@@ -658,7 +528,7 @@ def reconcile(
     status: bool = typer.Option(False, "--status", help="Show presence counts and the last reconcile run, without scanning disk."),
 ) -> None:
     """Diff DB-tracked source_files against what's actually on disk. Detects
-    deletions that `ingest` (a push, disk -> DB) can never observe on its own."""
+    deletions that `ingest` (a push, disk -> DB) can never observe on its own. Prints summary lines (or JSON with --json)."""
     config = load_config()
     conn = connect(config)
     try:
@@ -704,9 +574,9 @@ def reconcile(
             console.print(f"  ... and {len(report.missing) - 20} more")
 
 
-@app.command()
+@app.command(rich_help_panel="System & Health")
 def verify() -> None:
-    """Row counts, orphan checks, FTS integrity, hash spot-checks."""
+    """Row counts, orphan checks, FTS integrity, hash spot-checks. Prints a table."""
     config = load_config()
     conn = connect(config)
     try:
@@ -730,7 +600,7 @@ def verify() -> None:
         raise typer.Exit(code=1)
 
 
-@app.command()
+@app.command(rich_help_panel="System & Health")
 def audit(
     raw_dir: Path = typer.Option(None, "--raw-dir", help="Directory to check for unclaimed files (default: $CHATVAULT_ROOT/raw)."),
     platform: str = typer.Option(None, "--platform"),
@@ -741,7 +611,7 @@ def audit(
 ) -> None:
     """Did everything in the files end up in the database, in the right place?
     Compares DB state against disk and against expectations — distinct from
-    `verify`, which only checks internal DB consistency."""
+    `verify`, which only checks internal DB consistency. Prints one table per group; --json/--markdown change the output shape."""
     config = load_config()
     conn = connect(config)
     try:
@@ -791,6 +661,39 @@ def audit(
     raise typer.Exit(code=audit_mod.exit_code(report, strict=strict))
 
 
+@app.command("audit-shapes", rich_help_panel="System & Health")
+def audit_shapes(
+    platform: str = typer.Option(..., "--platform", help="v_conversations.platform value to audit, e.g. vscode."),
+    type_: str = typer.Option(None, "--type", help="Restrict to a single blocks.type, e.g. unknown. Ignored with --mode reasoning."),
+    mode: str = typer.Option("shapes", "--mode", help="'shapes' (default, spec §4.2) or 'reasoning' (spec §4.2b, ignores --type, sweeps ALL blocks)."),
+    out: Path = typer.Option(None, "--out", help="Write the full report as markdown here. Default: print to stdout."),
+) -> None:
+    """Read-only diagnostic: walks every key path of every raw_json record in
+    scope to full depth (no LIMIT, no sampling — see docs/50_SPEC_ingestion_fidelity_v1.md
+    §1.2/§4.2). Ranks paths by total character volume and cross-tabs shape
+    signatures, so adapter fixes are made from evidence, not guesswork.
+    --mode reasoning runs the §4.2b reasoning-locator sweep for one platform
+    across every block regardless of current type; never writes to the DB."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        if mode == "reasoning":
+            sweep = shapes_mod.reasoning_sweep(conn, platform)
+            text = shapes_mod.render_reasoning_report([sweep])
+        elif mode == "shapes":
+            result = shapes_mod.audit_blocks(conn, platform, type_filter=type_)
+            text = shapes_mod.render_shape_report(result)
+        else:
+            console.print(f"[red]unknown --mode {mode!r}, expected 'shapes' or 'reasoning'[/red]")
+            raise typer.Exit(code=1)
+    finally:
+        conn.close()
+
+    shapes_mod.write_report(text, out)
+    if out:
+        console.print(f"wrote {out}")
+
+
 def _render_find_table(title: str, rows: list, total: int) -> None:
     from rich.markup import escape
 
@@ -816,10 +719,10 @@ def _render_find_table(title: str, rows: list, total: int) -> None:
     console.print(f"showing {len(rows)} of {total} matches · saved as last query")
 
 
-@app.command()
+@app.command(rich_help_panel="Search & Browse")
 def find(
     query: str = typer.Argument(None, help="Free text. Titles match first, body text (FTS) second. Omit for most recent."),
-    platform: str = typer.Option(None, "--platform"),
+    platform: str = typer.Option(None, "--platform", help="Exact platform name, or a short alias: gpt, claude (matches claude_desktop + claude_code), ds, gem, wind."),
     since: str = typer.Option(None, "--since", help="ISO date, inclusive."),
     before: str = typer.Option(None, "--before", help="ISO date, exclusive."),
     project: str = typer.Option(None, "--project"),
@@ -830,13 +733,14 @@ def find(
     sort: str = typer.Option("recent", "--sort", help="recent | oldest | longest"),
 ) -> None:
     """Human-facing lister — find by title/date/platform, not uid. Numbers the
-    results and caches them so `export --pick`/`show --pick` can select by row."""
+    results and caches them so `export --pick`/`show --pick` can select by row. Prints a table."""
     config = load_config()
+    resolved_platform = platforms_mod.resolve_platform_alias(platform) if platform else None
     conn = connect(config)
     try:
         try:
             rows, total = browse_mod.find(
-                conn, query=query, platform=platform, since=since, before=before,
+                conn, query=query, platform=resolved_platform, since=since, before=before,
                 project=project, tag=tag, has_attachments=has_attachments, untagged=untagged, limit=limit, sort=sort,
             )
         except ValueError as exc:
@@ -881,21 +785,59 @@ def _interactive_pick(conn):
     return {"row": selected, "profile": profile}
 
 
-@app.command()
+def _parse_platform_spec(spec: str) -> tuple[set[str], set[str]]:
+    """'chatgpt' / 'chatgpt,claude_desktop' (include only these) or
+    '!chatgpt' / '!chatgpt,!grok' (everything except these) — or a mix.
+    Each token also passes through platforms.resolve_platform_alias, so
+    'gpt'/'claude'/'ds'/'gem'/'wind' work as short aliases (see that module)."""
+    includes: set[str] = set()
+    excludes: set[str] = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if part.startswith("!"):
+            excludes.update(platforms_mod.resolve_platform_alias(part[1:]))
+        else:
+            includes.update(platforms_mod.resolve_platform_alias(part))
+    return includes, excludes
+
+
+def _filter_by_platform(rows, spec: str):
+    includes, excludes = _parse_platform_spec(spec)
+    return [
+        r for r in rows
+        if (not includes or r["platform"] in includes) and r["platform"] not in excludes
+    ]
+
+
+@app.command(rich_help_panel="Exporting")
 def export(
     uid: str = typer.Option(None, "--uid", help="Export a single conversation by uid."),
     where: str = typer.Option(None, "--where", help="SQL predicate over v_conversations."),
     view: str = typer.Option(None, "--view", help="Name of a saved view to export."),
-    pick: str = typer.Option(None, "--pick", help="Row number(s) from the last `find`, e.g. '2' or '1,3'."),
+    pick: str = typer.Option(None, "--pick", help="Row number(s) from the last `find`, e.g. '2' or '1,3' — or 'all' for every row in that result set."),
+    platform: str = typer.Option(None, "--platform", help="Filter by platform: 'chatgpt', 'chatgpt,claude_desktop' (any of these), or '!chatgpt' (everything except). Combine with --pick/--where/--view to narrow those results, or use alone to export every conversation on that platform."),
     tree: str = typer.Option(None, "--tree", help="A tag or prefix (e.g. 'tech/**') — writes every matching conversation into a nested folder structure mirroring the tag tree, under --out. A conversation matching more than one tag in the tree appears under each."),
     profile: str = typer.Option(None, "--profile", help="read | lean | full. Defaults to 'read' whenever --pick/--tree/--blocks/--max-tool-chars is used."),
     blocks: str = typer.Option(None, "--blocks", help="Comma-separated block types to keep, e.g. 'text,code'. Overrides the profile's block selection."),
     max_tool_chars: int = typer.Option(None, "--max-tool-chars", help="Collapse tool_use/tool_result bodies longer than this. Overrides the profile's own budget."),
     template: str = typer.Option("default", "--template", help="default | full | obsidian | digest (legacy path — ignored once --profile/--pick/--blocks is set)."),
-    out: Path = typer.Option(None, "--out", help="Output directory (default: <vault>/exports)."),
+    out: Path = typer.Option(None, "--out", help="Output directory — used exactly as given, no dated folder added. Overrides --dest."),
+    dest: str = typer.Option("desktop", "--dest", help="Where to create the dated export folder when --out isn't given: 'desktop' (default) or 'here' (current directory)."),
     split_by: str = typer.Option(None, "--split-by", help="'conversation' writes one file per conversation."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the planned file layout without writing anything."),
 ) -> None:
-    """Export conversations to markdown. Pure SQL + Jinja2 — no LLM calls, deterministic output."""
+    """Export conversations to markdown. Pure SQL + Jinja2 — no LLM calls, deterministic output.
+
+    Unless --out is given, files land under a dated 'Chatvault_export_YYYY-MM-DD'
+    folder (on the Desktop by default, or --dest here for the current directory),
+    with one subfolder per platform. Writes file(s) to disk, nothing to stdout
+    (aside from --dry-run's preview)."""
+    if dest not in ("desktop", "here"):
+        console.print(f"[red]--dest must be 'desktop' or 'here', got {dest!r}[/red]")
+        raise typer.Exit(code=1)
+
     config = load_config()
     conn = connect(config)
     try:
@@ -924,12 +866,12 @@ def export(
 
         use_profile = pick is not None or profile is not None or blocks is not None or max_tool_chars is not None
 
-        if uid is None and where is None and view is None and pick is None:
+        if uid is None and where is None and view is None and pick is None and platform is None:
             picked = _interactive_pick(conn)
             if picked == "no-questionary":
                 console.print(
                     "[red]No selection given, and the interactive picker (`questionary`) isn't installed.[/red]\n"
-                    "Install it with `pip install questionary`, or pass --uid/--where/--view/--pick."
+                    "Install it with `pip install questionary`, or pass --uid/--where/--view/--pick/--platform."
                 )
                 raise typer.Exit(code=1)
             if picked is None:
@@ -946,19 +888,30 @@ def export(
                 console.print(f"[red]{exc}[/red]")
                 raise typer.Exit(code=1)
             rows = export_mod.get_conversations_by_ids(conn, conv_ids)
+            if platform:
+                rows = _filter_by_platform(rows, platform)
         else:
             rows = export_mod.get_conversations(conn, uid=uid, where=where, view=view)
+            if platform:
+                rows = _filter_by_platform(rows, platform)
 
         if not rows:
             console.print("[yellow]no conversations matched[/yellow]")
             raise typer.Exit(code=0)
 
-        out_dir = out or config.exports_dir
-        out_dir.mkdir(parents=True, exist_ok=True)
+        if out is not None:
+            out_dir = out
+        else:
+            dest_root = Path.cwd() if dest == "here" else Path.home() / "Desktop"
+            out_dir = dest_root / f"Chatvault_export_{date.today().isoformat()}"
 
         if not use_profile and template == "digest":
             content = export_mod.render_digest(conn, rows)
             path = out_dir / "digest.md"
+            if dry_run:
+                console.print(f"[dim]would write[/dim] {path}")
+                return
+            out_dir.mkdir(parents=True, exist_ok=True)
             path.write_text(content)
             console.print(f"wrote {path}")
             return
@@ -974,22 +927,31 @@ def export(
 
         name_for_filename = effective_profile if use_profile else template
 
-        if split_by == "conversation" or (uid is None and split_by is None and len(rows) > 1):
-            for row in rows:
-                content = _render(row)
-                conv = dict(row)
-                conv["uid_short"] = conv["uid"].split(":")[-1][:12]
-                fname = export_mod.filename_for(conv, name_for_filename)
-                (out_dir / fname).write_text(content)
-            console.print(f"wrote {len(rows)} file(s) to {out_dir}")
-        else:
-            row = rows[0]
-            content = _render(row)
+        def _target_path(row) -> Path:
             conv = dict(row)
             conv["uid_short"] = conv["uid"].split(":")[-1][:12]
             fname = export_mod.filename_for(conv, name_for_filename)
-            path = out_dir / fname
-            path.write_text(content)
+            return out_dir / (row["platform"] or "unknown") / fname
+
+        if split_by == "conversation" or (uid is None and split_by is None and len(rows) > 1):
+            if dry_run:
+                for row in rows:
+                    console.print(f"[dim]would write[/dim] {_target_path(row)}")
+                console.print(f"[dim]{len(rows)} file(s) planned under {out_dir}[/dim]")
+                return
+            for row in rows:
+                path = _target_path(row)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(_render(row))
+            console.print(f"wrote {len(rows)} file(s) under {out_dir}")
+        else:
+            row = rows[0]
+            path = _target_path(row)
+            if dry_run:
+                console.print(f"[dim]would write[/dim] {path}")
+                return
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(_render(row))
             console.print(f"wrote {path}")
     finally:
         conn.close()
@@ -1001,7 +963,7 @@ def tag_add(
     where: str = typer.Option(..., "--where", help="SQL predicate over the target view."),
     target: str = typer.Option("conversation", "--target", help="conversation | message | block"),
 ) -> None:
-    """Tag every row matching --where. Idempotent — safe to re-run."""
+    """Tag every row matching --where. Idempotent — safe to re-run. Prints one status line."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1013,6 +975,8 @@ def tag_add(
 
 @tag_app.command("list")
 def tag_list() -> None:
+    """Every tag that exists, with use counts. Exploratory, no arguments —
+    the flat vocabulary list; use `tag tree` for the hierarchical view. Prints a table."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1033,7 +997,7 @@ def tag_tree_cmd(
 ) -> None:
     """Browse the tag vocabulary as a hierarchy with cumulative counts —
     'inspecting a structure you built', not searching. Use `find --tag` when
-    a tag is one filter among several instead."""
+    a tag is one filter among several instead. Prints a tree view, not a table."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1072,7 +1036,7 @@ def tag_show_cmd(
     limit: int = typer.Option(200, "--limit"),
 ) -> None:
     """Drill into a tag — the conversations carrying it. Same engine, output,
-    and --pick cache as `find --tag`, just the right verb for browsing."""
+    and --pick cache as `find --tag`, just the right verb for browsing. Prints a table."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1092,7 +1056,7 @@ def tag_show_cmd(
 @tag_app.command("review")
 def tag_review_cmd(limit: int = typer.Option(200, "--limit")) -> None:
     """Shorthand for `tag show 'review/**'` — the anomalies worth checking
-    regularly, without spelling out a glob."""
+    regularly, without spelling out a glob. Prints a table."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1111,7 +1075,7 @@ def tag_review_cmd(limit: int = typer.Option(200, "--limit")) -> None:
 @tag_app.command("stats")
 def tag_stats_cmd() -> None:
     """The tagging backlog at a glance: tag count, tagged/untagged
-    conversations, and tags nobody has used yet."""
+    conversations, and tags nobody has used yet. Prints status lines."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1131,7 +1095,7 @@ def tag_untag(
 ) -> None:
     """Remove a tag (or, with --source alone, every tag from that source
     regardless of name) from matching rows. Pairs with `tag add`/
-    `import-from-folders`/`rule`/`portfolio-analyze` for reversibility."""
+    `import-from-folders`/`rule`/`portfolio-analyze` for reversibility. Prints one status line."""
     if name is None and source is None:
         console.print("[red]pass a tag name, --source, or both[/red]")
         raise typer.Exit(code=1)
@@ -1153,7 +1117,7 @@ def tag_import_from_folders(
 ) -> None:
     """Turn an existing folder organisation into hierarchical tags. Matches
     files to conversations by title + date; unmatched files are reported,
-    never silently dropped."""
+    never silently dropped. Prints a table plus a summary line."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1185,7 +1149,7 @@ def tag_import_tree_cmd(
     dry_run: bool = typer.Option(False, "--dry-run", help="Report what would be created without writing anything."),
 ) -> None:
     """Parse a nested YAML taxonomy into real tag rows — no conversations
-    tagged, just makes the whole tree exist in the palette up front."""
+    tagged, just makes the whole tree exist in the palette up front. Prints status lines."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1203,7 +1167,7 @@ def tag_rename_cmd(
     new_name: str = typer.Argument(...),
 ) -> None:
     """Renames a tag and everything nested under it (old/**). Every tag_link
-    is preserved. Merges into the destination if it already exists."""
+    is preserved. Merges into the destination if it already exists. Prints one status line."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1220,7 +1184,7 @@ def tag_merge_cmd(
 ) -> None:
     """Moves every use of `source` onto `target`, then deletes `source`.
     Both must already exist. Does not recurse into nested tags — use `rename`
-    for a whole branch."""
+    for a whole branch. Prints one status line."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1242,7 +1206,7 @@ def tag_rule_add(
 ) -> None:
     """Store a rule. Applied automatically to new/changed conversations on
     every future `ingest` (source='rule'); run `tag rule apply` to backfill
-    existing ones too. Always reversible: `tag untag <name> --source rule`."""
+    existing ones too. Always reversible: `tag untag NAME --source rule`. Prints one status line."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1254,6 +1218,7 @@ def tag_rule_add(
 
 @tag_rule_app.command("list")
 def tag_rule_list() -> None:
+    """Every stored rule and whether it's enabled. Exploratory, no arguments. Prints a table."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1274,7 +1239,7 @@ def tag_rule_list() -> None:
 @tag_rule_app.command("remove")
 def tag_rule_remove(rule_id: int = typer.Argument(...)) -> None:
     """Deletes the rule definition. Does not retroactively untag anything —
-    use `tag untag <name> --source rule` for that."""
+    use `tag untag` with the tag name and `--source rule` for that. Prints one status line."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1291,7 +1256,7 @@ def tag_rule_remove(rule_id: int = typer.Argument(...)) -> None:
 def tag_rule_apply() -> None:
     """Backfill: (re-)evaluate every enabled rule against every live
     conversation, not just new ones. Idempotent — already-applied tags are
-    skipped via the tag_links unique constraint."""
+    skipped via the tag_links unique constraint. Prints one status line."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1307,6 +1272,9 @@ def view_save(
     sql: str = typer.Option(..., "--sql", help="SQL returning at least an `id` column referencing conversations.id."),
     description: str = typer.Option(None, "--description"),
 ) -> None:
+    """Names a SQL query so it can be re-run by name later (`view run`) or
+    used as `export --view NAME`. Stores the query text only — nothing
+    is executed or exported at save time. Prints one status line."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1318,6 +1286,7 @@ def view_save(
 
 @view_app.command("run")
 def view_run(name: str = typer.Argument(...)) -> None:
+    """Executes a saved view's SQL and prints the raw result rows. Prints a table."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1337,6 +1306,7 @@ def view_run(name: str = typer.Argument(...)) -> None:
 
 @view_app.command("list")
 def view_list() -> None:
+    """Every saved view and its description. Exploratory, no arguments. Prints a table."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1351,12 +1321,14 @@ def view_list() -> None:
     console.print(table)
 
 
-@app.command()
+@app.command(rich_help_panel="Curation & Data Quality")
 def note(
     target_type: str = typer.Argument(..., help="conversation | message | block"),
     target_id: int = typer.Argument(...),
     text: str = typer.Argument(...),
 ) -> None:
+    """Attach a free-text annotation to one row. Additive only — never
+    overwrites or replaces an existing note on the same target. Prints one status line."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1366,13 +1338,13 @@ def note(
     console.print(f"annotation #{note_id} added to {target_type} {target_id}")
 
 
-@app.command()
+@app.command(rich_help_panel="Curation & Data Quality")
 def exclude(
     target: str = typer.Option(..., "--target", help="conversation | message | block"),
     where: str = typer.Option(..., "--where", help="SQL predicate over the base table."),
     reason: str = typer.Option(None, "--reason"),
 ) -> None:
-    """Reversible, logged exclusion. Never deletes anything."""
+    """Reversible, logged exclusion. Never deletes anything. Prints one status line."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1385,11 +1357,13 @@ def exclude(
     console.print(f"excluded {n} {target}(s)")
 
 
-@app.command()
+@app.command(rich_help_panel="Curation & Data Quality")
 def restore(
     target: str = typer.Option(..., "--target", help="conversation | message | block"),
     where: str = typer.Option(..., "--where", help="SQL predicate over the base table."),
 ) -> None:
+    """Undoes `exclude` — the exact inverse, same --target/--where shape.
+    Only rows currently excluded are affected. Prints one status line."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1402,7 +1376,7 @@ def restore(
     console.print(f"restored {n} {target}(s)")
 
 
-@app.command()
+@app.command(rich_help_panel="Curation & Data Quality")
 def dedupe(
     report: bool = typer.Option(True, "--report/--no-report", help="Print superseded / candidate / repeated-block summary."),
     scan: bool = typer.Option(False, "--scan", help="Re-scan for cross-source head_hash collisions without applying anything."),
@@ -1416,7 +1390,7 @@ def dedupe(
 ) -> None:
     """Cross-source dedupe. --apply only ever writes conversations.superseded_by —
     never touches blocks or excluded. Level 4 (repeated blocks) stays report-only
-    forever; no threshold ever auto-excludes."""
+    forever; no threshold ever auto-excludes. Prints status lines; several sub-modes live in one command."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1439,7 +1413,7 @@ def dedupe(
 
         if supersede:
             if not by:
-                console.print("[red]--supersede requires --by <uid>[/red]")
+                console.print("[red]--supersede requires --by, with a uid[/red]")
                 raise typer.Exit(code=1)
             _auto_backup(config, "pre-dedupe-supersede")
             cid = dedupe_mod.supersede(conn, supersede, by)
@@ -1476,17 +1450,17 @@ def dedupe(
         conn.close()
 
 
-@app.command()
+@app.command(rich_help_panel="Search & Browse")
 def search(
     query: str = typer.Argument(...),
-    platform: str = typer.Option(None, "--platform"),
+    platform: str = typer.Option(None, "--platform", help="Exact platform name, or a short alias: gpt, claude (matches claude_desktop + claude_code), ds, gem, wind."),
     type: str = typer.Option(None, "--type", help="text | thinking | tool_use | tool_result | code | ..."),
     semantic: bool = typer.Option(False, "--semantic", help="Search conversations by meaning (embeddings), not keyword overlap. Ignores --type (block-level, meaningless for a per-conversation vector search)."),
     limit: int = typer.Option(20, "--limit"),
 ) -> None:
     """Keyword search over blocks (default) or semantic search over
     conversations (--semantic) — finds conversations whose meaning matches
-    the query even if they share none of its actual words."""
+    the query even if they share none of its actual words. Prints a table."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1497,7 +1471,8 @@ def search(
                 console.print(f"[red]{exc}[/red]")
                 raise typer.Exit(code=1)
         else:
-            rows = search_mod.search(conn, query, platform=platform, type_=type, limit=limit)
+            resolved_platform = platforms_mod.resolve_platform_alias(platform) if platform else None
+            rows = search_mod.search(conn, query, platform=resolved_platform, type_=type, limit=limit)
     finally:
         conn.close()
 
@@ -1522,13 +1497,15 @@ def search(
     console.print(table)
 
 
-@app.command()
+@app.command(rich_help_panel="Search & Browse")
 def stats(
     by: str = typer.Option("platform", "--by", help="model | platform | project | month | tool | tag"),
     prefix: str = typer.Option(None, "--prefix", help="With --by tag: restrict to a tag prefix, e.g. 'tech/macos' (matches that tag and everything nested under it)."),
     unknown: bool = typer.Option(False, "--unknown", help="Report unmapped 'unknown' blocks by platform, so adapters can be improved incrementally."),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
+    """Counts grouped by one dimension (--by). Read-only, exploratory — no
+    arguments required, safe to run any time. Prints a table (or JSON with --json)."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1559,7 +1536,7 @@ def stats(
     console.print(table)
 
 
-@app.command()
+@app.command(rich_help_panel="Search & Browse")
 def show(
     uid: str = typer.Argument(None, help="Conversation uid. Omit when using --pick."),
     pick: str = typer.Option(None, "--pick", help="Row number from the last `find` (exactly one)."),
@@ -1569,12 +1546,12 @@ def show(
     template: str = typer.Option(None, "--template", help="Legacy path: default | full | obsidian. Overrides --profile/--blocks when given."),
     raw: bool = typer.Option(False, "--raw", help="Print directly, no pager — for piping."),
 ) -> None:
-    """Read a conversation without exporting a file."""
+    """Read a conversation without exporting a file. Pages the full text (or prints raw with --raw/piped)."""
     config = load_config()
     conn = connect(config)
     try:
         if uid is None and pick is None:
-            console.print("[red]pass a uid or --pick <row>[/red]")
+            console.print("[red]pass a uid or --pick, with a row number[/red]")
             raise typer.Exit(code=1)
 
         if pick is not None:
@@ -1613,7 +1590,7 @@ def show(
 
 @graph_app.command("rebuild")
 def graph_rebuild(depth: str = typer.Option("meta", "--depth", help="meta | full")) -> None:
-    """Drop and re-seed the Neo4j projection from SQLite. Neo4j is always disposable."""
+    """Drop and re-seed the Neo4j projection from SQLite. Neo4j is always disposable. Prints status lines with counts."""
     config = load_config()
     conn = connect(config)
     driver = graph_mod.get_driver(config)
@@ -1631,7 +1608,7 @@ def graph_push(
     since: str = typer.Option(None, "--since", help="ISO date — only push conversations started on/after this date."),
     depth: str = typer.Option("meta", "--depth", help="meta | full"),
 ) -> None:
-    """Incremental MERGE-based push — does not drop existing graph data."""
+    """Incremental MERGE-based push — does not drop existing graph data. Prints status lines with counts."""
     config = load_config()
     conn = connect(config)
     driver = graph_mod.get_driver(config)
@@ -1646,6 +1623,9 @@ def graph_push(
 
 @graph_app.command("query")
 def graph_query(cypher: str = typer.Argument(...)) -> None:
+    """Runs an arbitrary Cypher query against Neo4j and prints the rows.
+    Whatever the query does, it does — no safety rails at this level; use
+    `graph canned` for the pre-vetted read-only queries instead. Prints a table."""
     config = load_config()
     driver = graph_mod.get_driver(config)
     try:
@@ -1665,7 +1645,7 @@ def graph_query(cypher: str = typer.Argument(...)) -> None:
 
 @graph_app.command("canned")
 def graph_canned(name: str = typer.Argument(..., help=f"one of: {', '.join(graph_mod.CANNED_QUERIES)}")) -> None:
-    """Run one of the pre-written Cypher queries from the architecture spec."""
+    """Run one of the pre-written Cypher queries from the architecture spec. Prints a table."""
     if name not in graph_mod.CANNED_QUERIES:
         console.print(f"[red]unknown query {name!r}. options: {', '.join(graph_mod.CANNED_QUERIES)}[/red]")
         raise typer.Exit(code=1)
@@ -1688,6 +1668,8 @@ def graph_canned(name: str = typer.Argument(..., help=f"one of: {', '.join(graph
 
 @sources_app.command("list")
 def sources_list(kind: str = typer.Option(None, "--kind", help="live | frozen | server_side")) -> None:
+    """Every tracked root_dir with file/missing/retired counts. Exploratory —
+    no arguments required; --kind narrows to one provenance category. Prints a table."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1716,6 +1698,9 @@ def sources_mark(
     path_or_root: str = typer.Argument(...),
     kind: str = typer.Option(..., "--kind", help="live | frozen | server_side"),
 ) -> None:
+    """Manually sets the provenance kind for a path or root_dir — bulk over
+    every matching source_files row. Most platforms self-classify on ingest
+    (see `ledger`); this is the override for the ones that don't. Prints one status line."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1729,6 +1714,9 @@ def sources_mark(
 def sources_unclaimed(
     directory: Path = typer.Argument(None, help="default: $CHATVAULT_ROOT/raw"),
 ) -> None:
+    """Files under `directory` that no `source_files` row claims — never
+    ingested, or ingested from a different path. Read-only; run after
+    `ingest` to check nothing was silently skipped. Prints a plain file list plus a count."""
     config = load_config()
     directory = directory or config.raw_dir
     conn = connect(config)
@@ -1746,6 +1734,8 @@ def sources_unclaimed(
 
 @sources_app.command("export-manifest")
 def sources_export_manifest(out: Path = typer.Option(None, "--out")) -> None:
+    """Writes every tracked source_files row to a JSON manifest — a
+    portable snapshot of provenance, for archival or sharing outside the DB. Writes a file."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1780,6 +1770,9 @@ def _print_import_summary(summary) -> None:
 
 @curation_app.command("export")
 def curation_export(out: Path = typer.Option(None, "--out")) -> None:
+    """Snapshots every tag/annotation/exclusion/view to one portable JSON
+    file — the backup format for the curation layer specifically (not the
+    conversations themselves; pair with `backup` for the full DB). Writes a file."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1798,6 +1791,11 @@ def curation_import(
     on_conflict: str = typer.Option("skip", "--on-conflict", help="skip | overwrite (annotations always additive)."),
     dry_run: bool = typer.Option(False, "--dry-run"),
 ) -> None:
+    """Restores tags/annotations/exclusions/views from a `curation export`
+    file — the read half of that pair, typically after a wipe-and-re-ingest.
+    Annotations are always additive (never overwritten); --on-conflict only
+    governs tags/exclusions/views. Bulk over the whole file; --dry-run
+    reports without writing. Prints a summary table."""
     config = load_config()
     data = json.loads(file.read_text())
     conn = connect(config)
@@ -1815,6 +1813,8 @@ def curation_import(
 
 @curation_app.command("diff")
 def curation_diff(file: Path = typer.Argument(...)) -> None:
+    """`curation import`'s exact dry-run, standalone — see what would
+    change without the --dry-run flag or committing to running import. Prints a summary table, no writes."""
     config = load_config()
     data = json.loads(file.read_text())
     conn = connect(config)
@@ -1833,7 +1833,7 @@ def curation_replace_annotations(
     confirm: bool = typer.Option(False, "--confirm"),
 ) -> None:
     """Destructive escape hatch — physical DELETE, no restore path. Refuses
-    without --confirm. Takes a backup first. Every removal is logged."""
+    without --confirm. Takes a backup first. Every removal is logged. Prints one status line."""
     config = load_config()
     data = json.loads(file.read_text())
     conn = connect(config)
@@ -1852,14 +1852,17 @@ def curation_replace_annotations(
 def attachments_list(
     conv: int = typer.Option(None, "--conv", help="Conversation id."),
     project: int = typer.Option(None, "--project", help="Project id."),
-    platform: str = typer.Option(None, "--platform"),
+    platform: str = typer.Option(None, "--platform", help="Exact platform name, or a short alias: gpt, claude (matches claude_desktop + claude_code), ds, gem, wind."),
     type_: str = typer.Option(None, "--type", help="Extension, e.g. 'pdf'."),
     missing: bool = typer.Option(False, "--missing", help="Only availability='missing' rows."),
 ) -> None:
+    """Browse attachments, filtered by any combination of --conv/--project/
+    --platform/--type/--missing. Exploratory — every filter is optional. Prints a table."""
     config = load_config()
     conn = connect(config)
     try:
-        rows = attachments_mod.list_attachments(conn, conv=conv, project=project, platform=platform, type_=type_, missing=missing)
+        resolved_platform = platforms_mod.resolve_platform_alias(platform) if platform else None
+        rows = attachments_mod.list_attachments(conn, conv=conv, project=project, platform=resolved_platform, type_=type_, missing=missing)
     finally:
         conn.close()
     table = Table(title="attachments")
@@ -1876,6 +1879,8 @@ def attachments_list(
 
 @attachments_app.command("show")
 def attachments_show(attachment_id: int = typer.Argument(...)) -> None:
+    """Prints one attachment's extracted text (if any was extracted — the
+    file's bytes stay on disk, only text lives in the DB). Prints text to stdout."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1891,6 +1896,7 @@ def attachments_show(attachment_id: int = typer.Argument(...)) -> None:
 
 @attachments_app.command("stats")
 def attachments_stats() -> None:
+    """Totals and by-platform breakdown. Exploratory, no arguments. Prints a table."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1911,6 +1917,8 @@ def attachments_search(
     query: str = typer.Argument(...),
     limit: int = typer.Option(20, "--limit"),
 ) -> None:
+    """Full-text search over attachments' extracted text — the attachment
+    equivalent of `chatvault search`. Prints a table."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1933,7 +1941,7 @@ def attachments_exclude(
     where: str = typer.Option(None, "--where", help="SQL predicate over attachments."),
     reason: str = typer.Option(None, "--reason"),
 ) -> None:
-    """Hide it. Reversible. The normal move."""
+    """Hide it. Reversible. The normal move. Prints one status line."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1952,6 +1960,8 @@ def attachments_restore(
     attachment_id: int = typer.Argument(None),
     where: str = typer.Option(None, "--where"),
 ) -> None:
+    """Undoes `attachments exclude` — the exact inverse. Does not undo
+    `redact` (content is gone) or `purge` (row is gone). Prints one status line."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1972,7 +1982,7 @@ def attachments_redact(
     confirm: bool = typer.Option(False, "--confirm"),
 ) -> None:
     """Wipe the content, keep the record: content -> NULL, availability ->
-    'missing'. You keep the historical fact it existed, lose the text."""
+    'missing'. You keep the historical fact it existed, lose the text. Prints one status line."""
     config = load_config()
     conn = connect(config)
     try:
@@ -1992,7 +2002,7 @@ def attachments_purge(
     where: str = typer.Option(None, "--where"),
     confirm: bool = typer.Option(False, "--confirm"),
 ) -> None:
-    """Delete the row entirely. Takes a backup first, logs it, requires --confirm."""
+    """Delete the row entirely. Takes a backup first, logs it, requires --confirm. Prints one status line."""
     config = load_config()
     conn = connect(config)
     try:
@@ -2008,6 +2018,8 @@ def attachments_purge(
 
 @projects_app.command("list")
 def projects_list() -> None:
+    """Every project row, with conversation/doc counts. Exploratory, no
+    arguments — ambiguous names are flagged with ⚠. Prints a table."""
     config = load_config()
     conn = connect(config)
     try:
@@ -2037,7 +2049,7 @@ def projects_list() -> None:
 def projects_backfill() -> None:
     """Promote `conversations.project` labels into real `projects` rows,
     keyed on normalised workspace path (docs/FIX_project_identity.md).
-    Idempotent — safe to re-run after every ingest."""
+    Idempotent — safe to re-run after every ingest. Prints status lines."""
     config = load_config()
     _auto_backup(config, "pre-project-identity")
     conn = connect(config)
@@ -2060,6 +2072,9 @@ def projects_backfill() -> None:
 
 @projects_app.command("show")
 def projects_show(name: str = typer.Argument(...)) -> None:
+    """Drills into one project by exact name — every row across platforms
+    sharing that name (which is exactly what `projects review` flags as
+    ambiguous, if it happens more than once). Prints a table."""
     config = load_config()
     conn = connect(config)
     try:
@@ -2085,7 +2100,7 @@ def projects_show(name: str = typer.Argument(...)) -> None:
 @projects_app.command("review")
 def projects_review() -> None:
     """Everything flagged: ambiguous names (same name, different path) and
-    scratch buckets ('(no workspace)'). Flagged, never silently resolved."""
+    scratch buckets ('(no workspace)'). Flagged, never silently resolved. Prints a table."""
     config = load_config()
     conn = connect(config)
     try:
@@ -2113,7 +2128,7 @@ def projects_review() -> None:
 @projects_app.command("merge")
 def projects_merge_cmd(source_id: int = typer.Argument(...), target_id: int = typer.Argument(...)) -> None:
     """Moves every conversation from `source_id` onto `target_id`, then
-    deletes the source project row. Your decision — never automatic."""
+    deletes the source project row. Your decision — never automatic. Prints one status line."""
     config = load_config()
     conn = connect(config)
     try:
@@ -2129,6 +2144,8 @@ def projects_merge_cmd(source_id: int = typer.Argument(...), target_id: int = ty
 
 @projects_app.command("rename")
 def projects_rename_cmd(project_id: int = typer.Argument(...), new_name: str = typer.Argument(...)) -> None:
+    """Renames one project row by id. Cosmetic only — doesn't touch which
+    conversations belong to it (use `projects merge` for that). Prints one status line."""
     config = load_config()
     conn = connect(config)
     try:
@@ -2142,13 +2159,13 @@ def projects_rename_cmd(project_id: int = typer.Argument(...), new_name: str = t
     console.print(f"renamed project {project_id} -> {new_name!r}")
 
 
-@app.command()
+@app.command(rich_help_panel="Search & Browse")
 def screen() -> None:
     """The tagging screen (Tagging Workflow doc §3) — search, multi-select,
     click a tag in the tree to apply it to everything selected. Keyboard:
     / search, t/Enter apply a tag, u untag (tree cursor), z undo, a/n
     select all/none, Enter on a result reads it (Escape returns), s saves
-    the current filters as a view, q quits."""
+    the current filters as a view, q quits. Full-screen interactive TUI, not a one-shot printout."""
     from chatvault import screen as screen_mod
 
     config = load_config()
@@ -2159,7 +2176,7 @@ def screen() -> None:
         conn.close()
 
 
-@app.command()
+@app.command(rich_help_panel="Semantic Search & AI Analysis")
 def embed(
     force: bool = typer.Option(False, "--force", help="Re-embed even conversations whose text hasn't changed."),
     status: bool = typer.Option(False, "--status", help="Show embedded/pending counts without embedding anything."),
@@ -2167,7 +2184,7 @@ def embed(
     """Backfill semantic-search embeddings over the corpus (spec: 'runs once
     over the full existing corpus, then incrementally on new ingests' — this
     is the once; ingest handles the incrementally). Safe to interrupt and
-    re-run: already-embedded, unchanged conversations are skipped."""
+    re-run: already-embedded, unchanged conversations are skipped. Prints status lines."""
     config = load_config()
     conn = connect(config)
     try:
@@ -2193,13 +2210,13 @@ def embed(
         raise typer.Exit(code=1)
 
 
-@app.command("portfolio-analyze")
+@app.command("portfolio-analyze", rich_help_panel="Semantic Search & AI Analysis")
 def portfolio_analyze(
     where: str = typer.Option(None, "--where", help="SQL predicate over v_conversations — analyze a subset instead of everything."),
     pick: str = typer.Option(None, "--pick", help="Row number(s) from the last `find` — analyze just those."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Compute and report without writing any tags."),
     report: Path = typer.Option(None, "--report", help="Also write a human-readable markdown summary to this path."),
-    source: str = typer.Option("llm", "--source", help="tag_links.source for everything this writes. Keep it 'llm' unless you have a specific reason not to — `tag untag --source <this>` is how the whole run gets undone in one shot."),
+    source: str = typer.Option("llm", "--source", help="tag_links.source for everything this writes. Keep it 'llm' unless you have a specific reason not to — `tag untag --source llm` (or whichever --source you passed) is how the whole run gets undone in one shot."),
 ) -> None:
     """Port of technical_portfolio_extractor.py + reasoning_profile_analyzer.py
     (Build Order Step 8) — tags conversations by technical classification,
@@ -2211,7 +2228,7 @@ def portfolio_analyze(
 
     Every tag lands with --source (default 'llm'), so the entire run is
     reversible in one command regardless of how many distinct tag names it
-    touched: `chatvault tag untag --source llm`."""
+    touched: `chatvault tag untag --source llm`. Prints status lines; --report also writes a file."""
     config = load_config()
     conn = connect(config)
     try:

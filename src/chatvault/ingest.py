@@ -45,6 +45,7 @@ class FileIngestResult:
     inserted: int = 0
     noop: int = 0
     superseded: int = 0
+    reprocessed: int = 0
     flagged: int = 0
     error: str | None = None
 
@@ -266,7 +267,7 @@ def ingest_path(
             summary.files.append(FileIngestResult(file_path, "failed", adapter=mod.name, error=str(exc)))
             continue
 
-        cur = conn.execute(
+        conn.execute(
             """
             INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, kind, last_seen_at, root_dir, first_seen_at)
             VALUES (?, ?, ?, ?, ?, ?, 'ok', ?, ?, ?, ?)
@@ -277,13 +278,20 @@ def ingest_path(
             """,
             (str(file_path), sha, mod.platform, mod.name, file_path.stat().st_size, now, _kind_for_platform(mod.platform), now, root_dir, now),
         )
-        source_file_id = cur.lastrowid or conn.execute(
+        source_file_id = conn.execute(
             "SELECT id FROM source_files WHERE sha256 = ? AND adapter = ?", (sha, mod.name)
         ).fetchone()["id"]
 
         result = FileIngestResult(file_path, "ok", adapter=mod.name)
-        for cir in convs:
-            load_result = loader.load_conversation(conn, cir, source_file_id)
+        original_count = conn.execute(
+            "SELECT COUNT(*) FROM conversations WHERE source_file_id = ?", (source_file_id,)
+        ).fetchone()[0]
+        for position, cir in enumerate(convs):
+            load_result = (
+                loader.reprocess_conversation(conn, cir, source_file_id, position)
+                if reprocess and existing is not None
+                else loader.load_conversation(conn, cir, source_file_id)
+            )
             if load_result.action == "inserted":
                 result.inserted += 1
                 touched_conv_ids.append(load_result.conv_id)
@@ -292,8 +300,15 @@ def ingest_path(
             elif load_result.action == "superseded":
                 result.superseded += 1
                 touched_conv_ids.append(load_result.conv_id)
+            elif load_result.action == "reprocessed":
+                result.reprocessed += 1
+                touched_conv_ids.append(load_result.conv_id)
             elif load_result.action == "flagged_duplicate":
                 result.flagged += 1
+        if reprocess and existing is not None and len(convs) != original_count:
+            raise ValueError(
+                f"reprocess produced {len(convs)} conversations for source file {source_file_id}; expected {original_count}"
+            )
         conn.commit()
         summary.files.append(result)
 
@@ -307,6 +322,7 @@ def ingest_path(
 
             tags_mod.apply_rules(conn, conv_ids=touched_conv_ids)
             tags_mod.flag_model_unknown(conn, touched_conv_ids)
+            tags_mod.flag_shape_unclear(conn, touched_conv_ids)
 
             if embed:
                 from chatvault import embeddings as embeddings_mod
@@ -327,5 +343,11 @@ def ingest_path(
             from chatvault import reconcile as reconcile_mod
 
             reconcile_mod.reconcile(conn, roots=[root_dir], kind="live")
+
+        # Checkpoint WAL so large ingest transaction logs do not accumulate on disk
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.OperationalError:
+            pass
 
     return summary

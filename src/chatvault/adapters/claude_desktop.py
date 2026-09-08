@@ -66,6 +66,29 @@ def _blocks_from_content(content, fallback_text: str) -> list[dict]:
                     tool_name=item.get("name"),
                 )
             )
+            # docs/audit-shapes/reasoning-sweep.md line 13: `$.input.thought`
+            # — 405 occurrences, 278,219 total chars — is real reasoning
+            # prose nested inside a tool call's `input`, currently invisible
+            # as reasoning because `input` is only ever surfaced as the
+            # `tool_use` block's JSON-dumped text (above). Verified against
+            # production (`SELECT ... WHERE platform='claude_desktop' AND
+            # type='tool_use' AND raw_json LIKE '%"thought"%'`): every
+            # instance has `tool_name ==
+            # "sequential-thinking:sequentialthinking"`, an MCP tool whose
+            # `input` is `{thought, thoughtNumber, totalThoughts,
+            # nextThoughtNeeded}` — `thoughtNumber`/`totalThoughts`/
+            # `nextThoughtNeeded` are legitimate tool-call bookkeeping (this
+            # genuinely is a tool call), so the `tool_use` block above is not
+            # wrong and is kept as-is. `thought` itself is reasoning content
+            # rather than a tool argument in the ordinary sense, so it
+            # additionally gets its own `thinking` block instead of staying
+            # buried in the tool_use block's JSON dump. Split, not re-typed —
+            # both blocks share the same `raw=item` (spec §4.4 rule 4:
+            # `raw_json` is never modified by this phase, only what gets
+            # *extracted* from it).
+            thought = item.get("input", {}).get("thought") if isinstance(item.get("input"), dict) else None
+            if isinstance(thought, str) and thought.strip():
+                blocks.append(make_block(idx, "thinking", thought, raw=item))
         elif item_type == "tool_result":
             inner = item.get("content")
             text = inner if isinstance(inner, str) else json.dumps(inner, default=str)
@@ -74,6 +97,9 @@ def _blocks_from_content(content, fallback_text: str) -> list[dict]:
             blocks.append(make_block(idx, "image", "", raw=item))
         else:
             blocks.append(make_block(idx, "unknown", "", raw=item))
+
+    for i, b in enumerate(blocks):
+        b["idx"] = i
     return blocks
 
 

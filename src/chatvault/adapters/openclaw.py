@@ -113,6 +113,18 @@ def _blocks_from_content(content) -> list[dict]:
             continue
         item_type = item.get("type")
         if item_type == "toolCall":
+            # docs/audit-shapes/reasoning-sweep.md line 18: `$.arguments.thinking`
+            # (1 occurrence, 3 chars) is flagged by the reasoning-vocabulary
+            # matcher as currently typed `tool_use`. Verified against
+            # production (the one real occurrence, tool `sessions_spawn`):
+            # its value is the literal string `"low"` — a thinking-*effort*
+            # level passed to a spawned subagent (sibling of `thoughtNumber`/
+            # `timeoutSeconds` in the same `arguments` dict), not reasoning
+            # content. Reclassifying this as `thinking` would be exactly the
+            # "confident wrong label" spec §4.4 rule 2 forbids, just in the
+            # opposite direction — inventing reasoning where none exists.
+            # Left as `tool_use`, deliberately, with the evidence recorded
+            # here rather than silently skipped.
             blocks.append(
                 make_block(
                     idx,
@@ -129,6 +141,38 @@ def _blocks_from_content(content) -> list[dict]:
         else:
             blocks.append(make_block(idx, "unknown", "", raw=item))
     return blocks
+
+
+def _nested_thinking_texts(details) -> list[str]:
+    """Walks a `toolResult` message's `details` payload for nested
+    `messages[].content[].thinking` strings, at the two shapes confirmed in
+    production for `sessions_history`/`sessions_list` tool results:
+    `details.messages[]` (block id 78701, `sessionKey`-style single-session
+    shape) and `details.sessions[].messages[]` (block id 87843, the
+    multi-session list shape). Deliberately narrow to these two confirmed
+    paths, not a generic recursive walk — per spec §4.4 rule 2, an
+    unconfirmed shape stays unhandled rather than guessed at."""
+    out: list[str] = []
+    if not isinstance(details, dict):
+        return out
+
+    def _from_messages(messages) -> None:
+        if not isinstance(messages, list):
+            return
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+            for item in m.get("content") or []:
+                if isinstance(item, dict) and item.get("type") == "thinking":
+                    t = item.get("thinking")
+                    if isinstance(t, str) and t.strip():
+                        out.append(t)
+
+    _from_messages(details.get("messages"))
+    for session in details.get("sessions") or []:
+        if isinstance(session, dict):
+            _from_messages(session.get("messages"))
+    return out
 
 
 def _session_title(message_events: list[dict]) -> str | None:
@@ -231,6 +275,23 @@ def parse(path: Path) -> Iterator[dict]:
                     0, "tool_result", text, raw=msg, tool_name=msg.get("toolName")
                 )
                 blocks = [block]
+                # docs/audit-shapes/reasoning-sweep.md lines 16-17:
+                # `$.details.messages[].content[].thinking` (12 occurrences,
+                # 5,111 chars) and `$.details.sessions[].messages[].content[]
+                # .thinking` (1 occurrence, 321 chars), both role=tool,
+                # currently typed `tool_result`. Verified against production
+                # (block ids 78701 `sessions_history`, 87843 `sessions_list`):
+                # these tool results carry a structured `details` field
+                # mirroring the SAME session data already JSON-stringified
+                # inside `content[0].text` above — a nested sub-agent/session
+                # transcript, not this tool call's own reasoning. The
+                # stringified copy keeps that text somewhere inside the
+                # `tool_result` block's `text`, but buried as escaped JSON,
+                # never surfaced as `thinking` per §4.2b step 3 — so each
+                # nested `thinking` item additionally gets its own `thinking`
+                # block here.
+                for nested in _nested_thinking_texts(msg.get("details")):
+                    blocks.append(make_block(len(blocks), "thinking", nested, raw=msg))
                 model = None
             else:
                 blocks = _blocks_from_content(msg.get("content"))

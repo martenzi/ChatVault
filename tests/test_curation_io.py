@@ -111,7 +111,12 @@ def test_dry_run_changes_nothing(vault, conn):
         before = new_conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
         curation_io.import_curation(new_conn, data, dry_run=True)
         after = new_conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
-        assert before == after == 0
+        # `before` need not be 0: ingest's own post-load tagging passes (e.g.
+        # chatvault.tags.flag_shape_unclear(), spec 50_SPEC_ingestion_fidelity_v1
+        # §4.4/§7.6) may legitimately create tags for the ingested fixtures.
+        # What this test actually asserts is that the *dry run* changes
+        # nothing relative to whatever ingest already produced.
+        assert before == after
     finally:
         new_conn.close()
 

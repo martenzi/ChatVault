@@ -6,6 +6,7 @@ from urllib.parse import unquote
 
 import orjson
 
+from chatvault.adapters import identifiers
 from chatvault.adapters.base import make_block, make_conversation, make_message
 
 platform = "windsurf"
@@ -38,6 +39,42 @@ _ROLE_TO_BLOCK_TYPE = {
     "context": "attachment",
     "memory": "system",
     "system": "system",
+}
+
+# Phase 3 fix #1 — spec §4.4 / docs/audit-shapes/windsurf-unknown.md.
+#
+# The 727-record `unknown` corpus is raw protobuf enum leakage: 14 distinct
+# shapes, all keyed on a numeric `role="type_NN"` (no `role` string field on
+# the record at all, so `parse()` falls back to `f"type_{msg_type}"`). Of
+# those 14 shapes, exactly one is unambiguous enough to alias to a known
+# logical role instead of leaving as an anonymous enum value:
+#
+#   `type_84` (msg_type 84) — 11 occurrences — is the *only* numeric shape
+#   carrying `tool_name`/`tool_id`/`tool_args` (11/11/11 occurrences,
+#   evidenced in the "Leaf key paths" table), and unlike the literal
+#   `tool_call` role elsewhere in this map, it *also* carries `content`/
+#   `text` holding the tool's own output (e.g. a generated code-map JSON
+#   blob), not dialogue. That is a completed tool invocation with its
+#   result attached — the same shape `tool_result` already captures for the
+#   literal-role records — so it is aliased to `tool_result` rather than
+#   invented a role of its own.
+#
+# Every other numeric shape (`type_6/33/38/43/44/52/89/90/99` — 716 of the
+# 727 records, per the "Shape signatures" table) has no field beyond
+# `content`/`text`/`model`/`step_id`/`ts` to discriminate its meaning from
+# plain dialogue, tool traffic, planner output, or session bookkeeping.
+# Per spec §4.4 rule 2, guessing a role for those would be a confident wrong
+# label, not a gap — worse than `unknown`. They are deliberately left
+# unaliased: `block_type` falls through to `unknown` and `_block_text()`'s
+# existing `content`/`text` fallback (used for every role, not just mapped
+# ones) still populates `text` from the richest available leaf when one
+# exists (`$.content`/`$.text`, 78 of the 727 occurrences) — satisfying
+# "populate text from the best available leaf" without inventing a type.
+# `chatvault.tags.flag_shape_unclear()` (wired into `ingest_path()`) tags the
+# conversation `review/shape-unclear` automatically whenever any block in it
+# is still `unknown` after this — no adapter-side call needed here.
+_TYPE_NN_ROLE_ALIAS: dict[str, str] = {
+    "type_84": "tool_result",
 }
 
 
@@ -92,6 +129,27 @@ def _title_from_first_user_message(records: list[dict]) -> str | None:
     return None
 
 
+# Phase 3 fix #2 — spec §7.9 / identifiers.is_injected_context() docstring
+# ("The Windsurf `<system-retrieved-memory[` entry is the v4.0 fix..."), and
+# confirmed directly against production: of every windsurf block whose
+# `content`/`text` contains the literal `<SYSTEM-RETRIEVED-MEMORY[` marker,
+# 100% carry raw `role` "memory" (77 occurrences) or "context" (28
+# occurrences) — no other role does. Those roles currently bucket to
+# `blocks.type` "system"/"attachment" respectively (see _ROLE_TO_BLOCK_TYPE),
+# which is not the same as "hidden below `full`, retained, never dropped"
+# that `injected_context` specifically guarantees (spec §3.3, acceptance
+# §7.9). `is_injected_context()`'s own role gate (`user`/`assistant`/
+# `unknown`) is tuned for chat-shaped roles, not Cascade's memory/context
+# vocabulary, so it is called with role="unknown" here deliberately — this
+# is a content check (the marker itself), not a role check; the role gate
+# exists in that function only to skip roles that can never be dialogue
+# (e.g. pure tool plumbing), which memory/context records are not.
+def _maybe_injected_context(block_type: str, text: str) -> str:
+    if text and identifiers.is_injected_context("unknown", text):
+        return "injected_context"
+    return block_type
+
+
 def _build_blocks(rec: dict, role: str, default_block_type: str) -> list[dict]:
     """Almost always one block per record. The one exception: an assistant
     turn carrying both a `thinking` field (Claude extended-thinking trace,
@@ -104,19 +162,28 @@ def _build_blocks(rec: dict, role: str, default_block_type: str) -> list[dict]:
     isn't duplicated into two blocks: `_block_text`'s payloads[0] fallback
     already resolves to that same string post-fix, so using `thinking`
     directly just gives it the correct `thinking` type instead of the
-    generic `text` type it would otherwise fall into."""
+    generic `text` type it would otherwise fall into.
+
+    Every extracted string is routed through `identifiers.clean_text()`
+    (NUL/CRLF normalisation, thinking-signature and long base64/hex leak-line
+    stripping — ported verbatim from the vetted converter's `clean()`) before
+    becoming a block's `text`; `raw_json` (passed separately as `raw=rec`)
+    is untouched, per spec §4.4 rule 4."""
     thinking = rec.get("thinking") if role == "assistant" else None
     primary_text = rec.get("text") or rec.get("content")
     tool_name = rec.get("tool_name") if role in ("tool_call", "tool_result", "tool_error") else None
 
     blocks = []
     if thinking and primary_text:
-        blocks.append(make_block(len(blocks), "thinking", thinking, raw=rec))
-        blocks.append(make_block(len(blocks), default_block_type, primary_text, raw=rec, tool_name=tool_name))
+        blocks.append(make_block(len(blocks), "thinking", identifiers.clean_text(thinking), raw=rec))
+        text_type = _maybe_injected_context(default_block_type, primary_text)
+        blocks.append(make_block(len(blocks), text_type, identifiers.clean_text(primary_text), raw=rec, tool_name=tool_name))
     elif thinking:
-        blocks.append(make_block(len(blocks), "thinking", thinking, raw=rec))
+        blocks.append(make_block(len(blocks), "thinking", identifiers.clean_text(thinking), raw=rec))
     else:
-        blocks.append(make_block(len(blocks), default_block_type, _block_text(rec, role), raw=rec, tool_name=tool_name))
+        text = _block_text(rec, role)
+        text_type = _maybe_injected_context(default_block_type, text)
+        blocks.append(make_block(len(blocks), text_type, identifiers.clean_text(text), raw=rec, tool_name=tool_name))
     return blocks
 
 
@@ -145,11 +212,27 @@ def parse(path: Path) -> Iterator[dict]:
 
     messages = []
     for idx, rec in enumerate(records):
-        raw_role = rec.get("role") or f"type_{rec.get('msg_type')}"
-        msg_role = _ROLE_TO_MESSAGE_ROLE.get(raw_role, "system")
-        block_type = _ROLE_TO_BLOCK_TYPE.get(raw_role, "unknown")
+        role_field = rec.get("role")
+        # `identifiers.normalise_role()` only case/whitespace-folds and
+        # applies a small chat-role synonym table (human->user etc.) — none
+        # of those synonyms appear in windsurf-unknown.md's evidence, and
+        # windsurf's literal role strings ("user", "tool_call", "planner",
+        # ...) are this adapter's own vetted bucketing, so it adds no value
+        # to force-map through it. It IS applied defensively here (case/
+        # whitespace folding only) so a stray-cased literal role still hits
+        # the dicts below instead of silently falling through to the
+        # `type_NN` numeric fallback, which normalise_role() cannot resolve
+        # (it has no `msg_type` to fall back to) — hence the `role_field`
+        # truthiness guard before calling it.
+        raw_role = identifiers.normalise_role(role_field) if role_field else f"type_{rec.get('msg_type')}"
+        # See _TYPE_NN_ROLE_ALIAS above: the one evidenced numeric-role ->
+        # logical-role alias (type_84 -> tool_result). Every other raw_role
+        # (literal or type_NN) passes through unchanged.
+        lookup_role = _TYPE_NN_ROLE_ALIAS.get(raw_role, raw_role)
+        msg_role = _ROLE_TO_MESSAGE_ROLE.get(lookup_role, "system")
+        block_type = _ROLE_TO_BLOCK_TYPE.get(lookup_role, "unknown")
 
-        blocks = _build_blocks(rec, raw_role, block_type)
+        blocks = _build_blocks(rec, lookup_role, block_type)
 
         created_at = _iso_z(rec.get("iso"))
         messages.append(make_message(idx, msg_role, rec.get("model"), created_at, blocks, raw=rec))

@@ -12,7 +12,6 @@
 ---
 
 {% for msg in conv.messages %}
-{% if msg.role in ("user", "assistant") %}
 ## {{ msg.role | capitalize }}
 
 {% for block in msg.blocks %}
@@ -38,10 +37,25 @@
 {% elif block.type == "error" %}
 **error:** {{ block.text }}
 
+{% elif block.type == "refusal" %}
+**refused:** {{ block.text }}
+
+{% elif block.type == "audio" %}
+*[audio block]*
+
+{% elif block.type == "injected_context" %}
+<details><summary>injected context</summary>
+
+{{ block.text }}
+
+</details>
+
+{% elif block.type == "meta" %}
+*[meta: {{ block.text[:80] }}]*
+
 {% else %}
 *[{{ block.type }} block]*
 
 {% endif %}
 {% endfor %}
-{% endif %}
 {% endfor %}

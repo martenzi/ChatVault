@@ -1,0 +1,16 @@
+-- Tag-carryover provenance (docs/51_SPEC_brain_parity_and_naming.md §4.2).
+--
+-- `copy conversation`/`copy stashed` (the renamed `promote`) now carries a
+-- ChatVault conversation's own tags into the Brain instead of silently
+-- dropping them. Every tag_link that carryover creates is stamped
+-- source='chatvault' so `untag --source chatvault` can reverse a whole
+-- carryover in one command — the same convention ChatVault's own
+-- tag_links.source already uses for 'rule'/'llm'/'folder_import'
+-- (migrations/001_init.sql, migrations/007_tag_rules.sql). Links created
+-- any other way (`tag entry`, `add entry --tag`, `merge tags`) default to
+-- source='manual'.
+--
+-- Note: 003 was already taken by migrations/brain/003_semantic_search.sql
+-- by the time this was written, so this is 004 (docs/51_SPEC's own text
+-- assumed 003 was free — it wasn't; see §8 Q9 and STATUS.md).
+ALTER TABLE tag_links ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';

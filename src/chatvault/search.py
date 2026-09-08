@@ -8,7 +8,7 @@ from chatvault import tags as tags_mod
 def search(
     conn: sqlite3.Connection,
     query: str,
-    platform: str | None = None,
+    platform: str | tuple[str, ...] | None = None,
     type_: str | None = None,
     limit: int = 20,
 ) -> list[sqlite3.Row]:
@@ -21,8 +21,13 @@ def search(
     """
     params: list = [query]
     if platform:
-        sql += " AND c.platform = ?"
-        params.append(platform)
+        names = (platform,) if isinstance(platform, str) else tuple(platform)
+        if len(names) == 1:
+            sql += " AND c.platform = ?"
+            params.append(names[0])
+        else:
+            sql += f" AND c.platform IN ({','.join('?' * len(names))})"
+            params.extend(names)
     if type_:
         sql += " AND b.type = ?"
         params.append(type_)

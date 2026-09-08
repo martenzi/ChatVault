@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from chatvault import ingest
 from tests.conftest import FIXTURES
 
@@ -171,6 +173,101 @@ def test_windsurf_legacy_adapter_surfaces_thinking_field(conn):
     assert plain_blocks[0]["text"] == "You're welcome."
 
 
+def test_windsurf_legacy_thinking_and_text_blocks_stay_isolated(conn):
+    """Regression guard for the reasoning-locator sweep's flagged row
+    (docs/audit-shapes/reasoning-sweep.md: "windsurf | $.thinking | assistant
+    | text | 849 | 970064"). Investigation against production (block ids
+    101528/101529 and 847 other identical pairs) showed this is NOT a live
+    misclassification: every one of those 849 `text`-typed blocks is the
+    correctly-paired final-answer sibling of a `thinking`-typed block built
+    from the exact same underlying record (raw_json is shared between
+    siblings by design, which is what made the sweep's raw_json-based path
+    search see `$.thinking` "inside" the text block too). The actual `text`
+    column of the text-typed sibling must come from `content`/`text` only —
+    never from `thinking` — which is what this test pins down explicitly,
+    using the `thinking_field_sample.jsonl` fixture's idx-1 record (the same
+    thinking+content shape as the production pairs)."""
+    path = FIXTURES / "windsurf_legacy" / "thinking_field_sample.jsonl"
+    ingest.ingest_path(conn, path)
+
+    conv = conn.execute("SELECT id FROM conversations").fetchone()
+    msg = conn.execute(
+        "SELECT id FROM messages WHERE conv_id = ? AND idx = 1", (conv["id"],)
+    ).fetchone()
+    blocks = conn.execute(
+        "SELECT idx, type, text FROM blocks WHERE msg_id = ? ORDER BY idx", (msg["id"],)
+    ).fetchall()
+
+    thinking_block, text_block = blocks
+    assert thinking_block["type"] == "thinking"
+    assert text_block["type"] == "text"
+    # The text block's own `text` must be the final answer, not a copy of
+    # (or containing) the thinking trace.
+    assert text_block["text"] == "I'll check the config first."
+    assert "plan" not in text_block["text"].lower()
+    assert thinking_block["text"] not in text_block["text"]
+
+
+def test_windsurf_legacy_unknown_shape_fixes(conn):
+    """Regression test for the two evidenced windsurf `unknown`-block fixes
+    (docs/audit-shapes/windsurf-unknown.md):
+
+    - `type_84` (11 occurrences in production, tool_name/tool_id/tool_args +
+      content/text all present) is a completed tool invocation, aliased to
+      `tool_result` rather than left an anonymous enum leak.
+    - every other numeric `type_NN` role stays `unknown` — a content-bearing
+      one (`type_38`, evidenced by `$.content`/`$.text`) gets its `text`
+      populated from that leaf; a content-less one (`type_89`, the largest
+      single unknown shape at 470/727 production occurrences) stays
+      `unknown` with empty text, honestly, rather than a guessed label.
+
+    Also covers spec §7.9 / the injected-context fix: a `memory`-role and a
+    `context`-role record both carrying the real
+    `<SYSTEM-RETRIEVED-MEMORY[uuid]>` marker (confirmed against production:
+    100% of windsurf blocks containing this marker have raw role "memory" or
+    "context") must classify as `injected_context`, not their default
+    `system`/`attachment` bucket — while a plain `memory` record with no
+    marker keeps its ordinary `system` classification (no false positive)."""
+    path = FIXTURES / "windsurf_legacy" / "unknown_shape_fixes_sample.jsonl"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 1
+
+    conv = conn.execute("SELECT id FROM conversations").fetchone()
+    blocks = conn.execute(
+        "SELECT b.idx, b.type, b.tool_name, b.text "
+        "FROM blocks b JOIN messages m ON b.msg_id = m.id "
+        "WHERE m.conv_id = ? ORDER BY m.idx", (conv["id"],),
+    ).fetchall()
+
+    # `b.idx` is the block's index within its own message (always 0 here,
+    # since every fixture message is single-block) — order by message idx
+    # instead, which the query above already does.
+    ordered = blocks
+
+    type_84_block = ordered[0]
+    assert type_84_block["type"] == "tool_result"
+    assert type_84_block["tool_name"] == "create_code_map"
+    assert type_84_block["text"] == '{"title":"Repo Map","nodes":3}'
+
+    type_38_block = ordered[1]
+    assert type_38_block["type"] == "unknown"
+    assert type_38_block["text"] == "Some content-bearing but semantically undiscriminated protobuf enum leak."
+
+    type_89_block = ordered[2]
+    assert type_89_block["type"] == "unknown"
+    assert type_89_block["text"] == ""
+
+    memory_injected = ordered[3]
+    assert memory_injected["type"] == "injected_context"
+
+    context_injected = ordered[4]
+    assert context_injected["type"] == "injected_context"
+
+    plain_memory = ordered[5]
+    assert plain_memory["type"] == "system"
+    assert plain_memory["text"] == "Ordinary recalled memory note with no injection marker."
+
+
 def test_cursor_legacy_adapter_bundles_text_and_tool_blocks(conn):
     """One Cursor bubble can carry text AND a tool call at once — both must
     become separate blocks on a single message, not separate messages."""
@@ -197,6 +294,53 @@ def test_cursor_legacy_adapter_bundles_text_and_tool_blocks(conn):
     assert blocks[2]["type"] == "tool_result"
 
 
+def test_cursor_legacy_adapter_extracts_thinking_and_flags_genuine_unknowns(conn):
+    """docs/50_SPEC_ingestion_fidelity_v1.md Phase 3/§4 fix for
+    docs/audit-shapes/cursor-unknown.md: the 1501/1512-block shape's
+    `thinking.text` must surface as a `thinking` block (not stay
+    `unknown`), its sibling `thinking.signature` must never leak into
+    rendered text, ambiguous-but-content-bearing shapes (a conversation
+    summary) stay `unknown` with populated text, an unambiguous one
+    (errorDetails) gets classified `error`, and a truly empty bubble stays
+    `unknown` with empty text."""
+    path = FIXTURES / "cursor_legacy" / "sample_unknown_shapes.jsonl"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 1
+
+    conv = conn.execute(
+        "SELECT * FROM conversations WHERE native_id = ?", ("c0mp0ser-unkn0wn-shapes-0000",)
+    ).fetchone()
+    assert conv["message_count"] == 4
+
+    rows = conn.execute(
+        "SELECT b.type, b.text FROM messages m JOIN blocks b ON b.msg_id = m.id "
+        "WHERE m.conv_id = ? ORDER BY m.idx, b.idx", (conv["id"],)
+    ).fetchall()
+    assert [r["type"] for r in rows] == ["thinking", "unknown", "error", "unknown"]
+
+    thinking_text = rows[0]["text"]
+    assert "Checking network config" in thinking_text
+    # The opaque Fernet-prefixed signature blob must never reach blocks.text.
+    assert "gAAAAA" not in thinking_text
+    assert "encrypted_content" not in thinking_text
+
+    assert "Primary Request and Intent" in rows[1]["text"]
+
+    assert "resource_exhausted" in rows[2]["text"]
+
+    assert rows[3]["text"] == ""
+
+    # raw_json stays byte-identical for the reasoning block: the signature
+    # is preserved verbatim in raw even though it's excluded from text.
+    raw = json.loads(
+        conn.execute(
+            "SELECT b.raw_json FROM messages m JOIN blocks b ON b.msg_id = m.id "
+            "WHERE m.conv_id = ? ORDER BY m.idx, b.idx LIMIT 1", (conv["id"],)
+        ).fetchone()[0]
+    )
+    assert "gAAAAA" in raw["signature"]
+
+
 def test_vscode_legacy_adapter_classifies_events_by_role_and_kind(conn):
     path = FIXTURES / "vscode_legacy" / "sample_session.jsonl"
     summary = ingest.ingest_path(conn, path)
@@ -220,6 +364,105 @@ def test_vscode_legacy_adapter_classifies_events_by_role_and_kind(conn):
         ("system", "unknown"),  # the trailing per-request "result" blob
     ]
     assert rows[2]["tool_name"] == "copilot_renameFile"
+
+
+def test_vscode_legacy_adapter_classifies_previously_unknown_shapes(conn):
+    """Regression coverage for docs/50_SPEC_ingestion_fidelity_v1.md §4 —
+    the 11 shapes vscode-unknown.md enumerated behind `type=unknown`
+    (role='result' bundles and the 10 role='assistant' `kind` values), plus
+    the vscode-specific reasoning-sweep fix (tool 'thought' -> thinking)."""
+    path = FIXTURES / "vscode_legacy" / "sample_session_shapes.jsonl"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 1
+
+    conv = conn.execute(
+        "SELECT * FROM conversations WHERE native_id = ?", ("vsc0de-shapes-0001",)
+    ).fetchone()
+    assert conv is not None
+
+    rows = conn.execute(
+        "SELECT m.idx as msg_idx, b.idx as blk_idx, m.role, b.type, b.tool_name, b.text "
+        "FROM messages m JOIN blocks b ON b.msg_id = m.id "
+        "WHERE m.conv_id = ? ORDER BY m.idx, b.idx",
+        (conv["id"],),
+    ).fetchall()
+    by_msg: dict[int, list] = {}
+    for r in rows:
+        by_msg.setdefault(r["msg_idx"], []).append(r)
+
+    # inlineReference (idx 1) -> attachment, text = the referenced path.
+    assert by_msg[1][0]["type"] == "attachment"
+    assert "xAI_positions" in by_msg[1][0]["text"]
+
+    # codeblockUri (idx 2) -> attachment, text = the code block's resource.
+    assert by_msg[2][0]["type"] == "attachment"
+    assert "export.sh" in by_msg[2][0]["text"]
+
+    # undoStop (idx 3) -> meta, no real prose content.
+    assert by_msg[3][0]["type"] == "meta"
+
+    # mcpServersStarting (idx 4) -> meta, genuinely zero content.
+    assert by_msg[4][0]["type"] == "meta"
+
+    # progressTask (idx 5) -> system, carries the compaction-style summary.
+    assert by_msg[5][0]["type"] == "system"
+    assert "Summarized conversation history" in by_msg[5][0]["text"]
+
+    # confirmation (idx 6) -> system, the confirmation prompt text.
+    assert by_msg[6][0]["type"] == "system"
+    assert "Continue to iterate" in by_msg[6][0]["text"]
+
+    # elicitation (idx 7) -> system.
+    assert by_msg[7][0]["type"] == "system"
+    assert "process_thesis_pdfs" in by_msg[7][0]["text"]
+
+    # command (idx 8) -> system, the command's title.
+    assert by_msg[8][0]["type"] == "system"
+    assert "Create File" in by_msg[8][0]["text"]
+
+    # tool record (idx 9) carries a toolSpecificData.rawInput.thought
+    # (reasoning-sweep.md's vscode finding) -> a leading thinking block,
+    # then the tool_use block, tool_name preserved.
+    tool_blocks = by_msg[9]
+    assert [b["type"] for b in tool_blocks] == ["thinking", "tool_use"]
+    assert "fetch the careers page" in tool_blocks[0]["text"]
+    assert tool_blocks[1]["tool_name"] == "fetch_webpage"
+
+    # role='result' with rich metadata (idx 10) decomposes into several
+    # typed blocks instead of one empty `unknown` block.
+    result_blocks = {b["type"]: b["text"] for b in by_msg[10]}
+    assert "injected_context" in result_blocks
+    assert "current date is 2 January 2026" in result_blocks["injected_context"]
+    assert "thinking" in result_blocks
+    assert "fetch the careers page" in result_blocks["thinking"] or "careers page" in result_blocks["thinking"]
+    assert "tool_result" in {b["type"] for b in by_msg[10]}
+    tool_result_texts = [b["text"] for b in by_msg[10] if b["type"] == "tool_result"]
+    assert any("ai_file_detective.py" in t for t in tool_result_texts)  # edits bundle
+    assert any("open-roles" in t or "Data Scientist" in t for t in tool_result_texts)  # toolCallResults
+    assert "system" in result_blocks
+    assert "Chronological Review" in result_blocks["system"]
+    assert "text" in result_blocks
+    assert "departments" in result_blocks["text"] or "anthropic folder" in result_blocks["text"]
+    assert "unknown" not in result_blocks
+
+    # role='result' with empty metadata (idx 11): no evidenced leaf matched,
+    # so it stays `unknown` per spec §4.4 rule 2 — but with populated text
+    # (never a silent empty unknown block), and the conversation gets
+    # tagged for review instead of a guessed label.
+    fallback_blocks = by_msg[11]
+    assert fallback_blocks[0]["type"] == "unknown"
+    assert fallback_blocks[0]["text"] != ""
+    assert "500" in fallback_blocks[0]["text"]
+
+    tag_row = conn.execute(
+        """
+        SELECT 1 FROM tag_links tl
+        JOIN tags t ON t.id = tl.tag_id
+        WHERE t.name = 'review/shape-unclear' AND tl.target_type = 'conversation' AND tl.target_id = ?
+        """,
+        (conv["id"],),
+    ).fetchone()
+    assert tag_row is not None
 
 
 def test_cursor_legacy_copilot_adapter_handles_both_subformats(conn):
@@ -262,6 +505,88 @@ def test_cursor_legacy_copilot_adapter_handles_both_subformats(conn):
         ).fetchall()
     ]
     assert texts == ["add a retry with backoff to the fetch loop", "now write a test for the retry logic"]
+
+
+def test_cursor_legacy_copilot_adapter_classifies_previously_unknown_shapes(conn):
+    """Regression coverage for docs/50_SPEC_ingestion_fidelity_v1.md §4 —
+    the 7 `role='assistant'` `kind` shapes docs/audit-shapes/
+    cursor_copilot-unknown.md enumerated behind `type=unknown` (620 blocks),
+    plus the fallback path for a kind outside that inventory."""
+    path = FIXTURES / "cursor_legacy_copilot" / "sample_session_shapes.jsonl"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 1
+
+    conv = conn.execute(
+        "SELECT * FROM conversations WHERE native_id = ?", ("cpsess-shapes-0001",)
+    ).fetchone()
+    assert conv is not None
+
+    rows = conn.execute(
+        "SELECT m.idx as msg_idx, m.role, b.type, b.tool_name, b.text "
+        "FROM messages m JOIN blocks b ON b.msg_id = m.id "
+        "WHERE m.conv_id = ? ORDER BY m.idx, b.idx",
+        (conv["id"],),
+    ).fetchall()
+    by_msg = {r["msg_idx"]: r for r in rows}
+
+    # codeblockUri (idx 1) -> attachment, text = the code block's resource.
+    assert by_msg[1]["type"] == "attachment"
+    assert "build-info.sh" in by_msg[1]["text"]
+
+    # inlineReference, direct variant (idx 2) -> attachment.
+    assert by_msg[2]["type"] == "attachment"
+    assert "/bin/zsh" in by_msg[2]["text"]
+
+    # inlineReference, location/symbol variant (idx 3) -> attachment, prefers
+    # the symbol name over the nested location path.
+    assert by_msg[3]["type"] == "attachment"
+    assert by_msg[3]["text"] == "compare-commits.sh"
+
+    # textEditGroup (idx 4) -> tool_result, the reconstructed code edit.
+    assert by_msg[4]["type"] == "tool_result"
+    assert "import sys" in by_msg[4]["text"]
+    assert "def main(checkpoint_dir)" in by_msg[4]["text"]
+    assert "build-info.sh" in by_msg[4]["text"]
+
+    # progressMessage (idx 5) -> meta, the transient status text.
+    assert by_msg[5]["type"] == "meta"
+    assert "Refining question" in by_msg[5]["text"]
+
+    # command (idx 6) -> system, the command's title.
+    assert by_msg[6]["type"] == "system"
+    assert "Show in Settings Editor" in by_msg[6]["text"]
+
+    # confirmation (idx 7) -> system, joining title + message + the replayed
+    # prompt that triggered it.
+    assert by_msg[7]["type"] == "system"
+    assert "Enable Claude 3.7 Sonnet" in by_msg[7]["text"]
+    assert "CrewAI" in by_msg[7]["text"]
+
+    # kind='text' (idx 8) is actually a working-set folder/file tree, not
+    # prose -> attachment, not the misleading 'text' block type.
+    assert by_msg[8]["type"] == "attachment"
+    assert "pdf-ocr-project" in by_msg[8]["text"]
+    assert "main.py" in by_msg[8]["text"]
+
+    # A kind outside the audit's 7-shape inventory (idx 9) stays `unknown`
+    # per spec §4.4 rule 2, but with populated text (never silently empty).
+    assert by_msg[9]["type"] == "unknown"
+    assert by_msg[9]["text"] != ""
+    assert "mysteryFutureKind" in by_msg[9]["text"]
+
+    # role='tool' records are unaffected by this change.
+    assert by_msg[10]["type"] == "tool_use"
+    assert by_msg[10]["tool_name"] == "run_terminal"
+
+    tag_row = conn.execute(
+        """
+        SELECT 1 FROM tag_links tl
+        JOIN tags t ON t.id = tl.tag_id
+        WHERE t.name = 'review/shape-unclear' AND tl.target_type = 'conversation' AND tl.target_id = ?
+        """,
+        (conv["id"],),
+    ).fetchone()
+    assert tag_row is not None
 
 
 def test_chatgpt_legacy_recovered_adapter_infers_role_from_id_scheme_a(conn):
@@ -562,3 +887,138 @@ def test_grok_mixed_file_ingests_both_conversations_and_projects(conn):
     assert project["kind"] == "grok_project"
     assert project["native_id"] == "ws-1"
     assert project["name"] == "job-hunter"
+
+
+def test_grok_adapter_classifies_previously_unknown_shapes(conn):
+    """docs/50_SPEC_ingestion_fidelity_v1.md Phase 3/§4 fix for
+    docs/audit-shapes/grok-unknown.md: a bare top-level `thinking_trace`
+    (not nested under `agent_thinking_traces`) must surface as `thinking`,
+    a top-level `error` string must classify as `error`, and a genuinely
+    content-free response (partial/manual, no message/thinking/error) must
+    stay `unknown` with empty text rather than being guessed at."""
+    path = FIXTURES / "grok" / "unknown_shapes.json"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 1
+
+    conv = conn.execute(
+        "SELECT * FROM conversations WHERE native_id = ?", ("grok-conv-unknown-shapes",)
+    ).fetchone()
+    assert conv is not None
+
+    rows = conn.execute(
+        "SELECT b.type, b.text FROM messages m JOIN blocks b ON b.msg_id = m.id "
+        "WHERE m.conv_id = ? ORDER BY m.idx, b.idx", (conv["id"],)
+    ).fetchall()
+    assert [r["type"] for r in rows] == ["text", "thinking", "error", "unknown"]
+    assert "Bare top-level thinking_trace" in rows[1]["text"]
+    assert rows[2]["text"] == "Failed to send request."
+    assert rows[3]["text"] == ""
+
+
+def test_chatgpt_adapter_leaves_bare_id_text_shape_unknown(conn):
+    """docs/50_SPEC_ingestion_fidelity_v1.md Phase 3/§4 fix for
+    docs/audit-shapes/chatgpt-unknown.md: a bare `{id, text}` content dict
+    (no `content_type` at all) has no content-bearing leaf when `text` is
+    empty, so it correctly stays `unknown` with empty text rather than
+    surfacing the `id` UUID as if it were dialogue."""
+    path = FIXTURES / "chatgpt" / "bare_id_text_shape.json"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 1
+
+    conv = conn.execute(
+        "SELECT * FROM conversations WHERE native_id = ?", ("conv-bare-shape",)
+    ).fetchone()
+    assert conv is not None
+
+    block = conn.execute(
+        "SELECT b.type, b.text FROM messages m JOIN blocks b ON b.msg_id = m.id "
+        "WHERE m.conv_id = ? ORDER BY m.idx DESC LIMIT 1", (conv["id"],)
+    ).fetchone()
+    assert block["type"] == "unknown"
+    assert block["text"] == ""
+
+
+def test_claude_code_adapter_classifies_fallback_and_pdf_document(conn):
+    """docs/50_SPEC_ingestion_fidelity_v1.md Phase 3/§4 fix for
+    docs/audit-shapes/claude_code-unknown.md: a `type='fallback'` content
+    item (a model-routing event) becomes `meta` with a human-readable
+    summary, and a `type='document'` base64-PDF content item becomes an
+    `attachment` block (not `unknown` text dumped with raw base64)."""
+    path = FIXTURES / "claude_code" / "unknown_shapes.jsonl"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 1
+
+    conv = conn.execute(
+        "SELECT * FROM conversations WHERE native_id = ?", ("s-unknown",)
+    ).fetchone()
+    assert conv is not None
+
+    rows = conn.execute(
+        "SELECT b.type, b.text, b.attachment_id FROM messages m JOIN blocks b ON b.msg_id = m.id "
+        "WHERE m.conv_id = ? ORDER BY m.idx, b.idx", (conv["id"],)
+    ).fetchall()
+    assert [r["type"] for r in rows] == ["text", "meta", "attachment", "text"]
+    assert "claude-fable-5" in rows[1]["text"]
+    assert "claude-opus-4-8" in rows[1]["text"]
+    assert rows[2]["attachment_id"] is not None
+
+    attachment = conn.execute(
+        "SELECT mime, availability FROM attachments WHERE id = ?", (rows[2]["attachment_id"],)
+    ).fetchone()
+    assert attachment["mime"] == "application/pdf"
+
+
+def test_claude_desktop_adapter_surfaces_sequential_thinking_tool_input(conn):
+    """docs/50_SPEC_ingestion_fidelity_v1.md §4.2b fix for
+    docs/audit-shapes/reasoning-sweep.md's claude_desktop row: the
+    sequential-thinking MCP tool's `input.thought` is real reasoning prose
+    nested inside a legitimate `tool_use` call. Both the `tool_use` block
+    (still carrying the full input, including thoughtNumber/totalThoughts
+    bookkeeping) and a new `thinking` block (carrying just the prose) must
+    be emitted — a split, not a re-type."""
+    path = FIXTURES / "claude_desktop" / "sequential_thinking.json"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 1
+
+    conv = conn.execute(
+        "SELECT * FROM conversations WHERE native_id = ?", ("web-conv-thinking",)
+    ).fetchone()
+    assert conv is not None
+
+    rows = conn.execute(
+        "SELECT b.type, b.tool_name, b.text FROM messages m JOIN blocks b ON b.msg_id = m.id "
+        "WHERE m.conv_id = ? ORDER BY m.idx, b.idx", (conv["id"],)
+    ).fetchall()
+    assert [r["type"] for r in rows] == ["text", "tool_use", "thinking"]
+    assert rows[1]["tool_name"] == "sequential-thinking:sequentialthinking"
+    assert "thoughtNumber" in rows[1]["text"]
+    assert "qBittorrent" in rows[2]["text"]
+
+
+def test_openclaw_adapter_surfaces_nested_thinking_and_leaves_effort_arg_alone(conn):
+    """docs/50_SPEC_ingestion_fidelity_v1.md §4.2b fix for
+    docs/audit-shapes/reasoning-sweep.md's openclaw rows: a `toolResult`'s
+    structured `details.messages[]`/`details.sessions[].messages[]` payload
+    (sessions_history/sessions_list) must surface its nested `thinking`
+    items as their own `thinking` blocks, alongside the existing
+    `tool_result` block. A `toolCall`'s `arguments.thinking` (a thinking-
+    effort level like "low", not reasoning content) must NOT be
+    reclassified — it stays `tool_use`."""
+    path = FIXTURES / "openclaw" / "nested_thinking_shapes.jsonl"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 1
+
+    conv = conn.execute(
+        "SELECT * FROM conversations WHERE native_id = ?",
+        ("cccc3333-4444-5555-6666-777788889999",),
+    ).fetchone()
+    assert conv is not None
+
+    rows = conn.execute(
+        "SELECT b.type, b.text FROM messages m JOIN blocks b ON b.msg_id = m.id "
+        "WHERE m.conv_id = ? ORDER BY m.idx, b.idx", (conv["id"],)
+    ).fetchall()
+    assert [r["type"] for r in rows] == ["text", "tool_use", "tool_result", "thinking", "tool_result", "thinking"]
+    assert '"thinking": "low"' in rows[1]["text"] or '"thinking":"low"' in rows[1]["text"].replace(" ", "") or "low" in rows[1]["text"]
+    assert "shape A" in rows[3]["text"]
+    assert "shape B" in rows[5]["text"]

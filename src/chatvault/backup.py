@@ -32,7 +32,19 @@ def _slug(label: str) -> str:
 
 
 def _backups_dir(config: Config, out_dir: Path | None) -> Path:
-    d = out_dir or (config.db_dir / "backups")
+    if out_dir:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return out_dir
+
+    if config.backup_dir_override:
+        try:
+            config.backup_dir_override.mkdir(parents=True, exist_ok=True)
+            return config.backup_dir_override
+        except (OSError, PermissionError) as exc:
+            import sys
+            print(f"[warning] CHATVAULT_BACKUP_DIR ({config.backup_dir_override}) unreachable ({exc}); falling back to local db/backups", file=sys.stderr)
+
+    d = config.backup_dir
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -138,10 +150,17 @@ def restore_backup(config: Config, backup_file: Path, to: Path | None = None, fo
 
 
 def prune_backups(config: Config, keep: int, out_dir: Path | None = None) -> list[Path]:
-    backups_dir = _backups_dir(config, out_dir)
+    """Prunes backups keeping the most recent `keep` backups PLUS any backups
+    with a 'pre-*' label, since pre-* labels mark critical checkpoints/decisions."""
     infos = sorted(list_backups(config, out_dir), key=lambda i: i.created_at, reverse=True)
     deleted = []
-    for info in infos[keep:]:
+
+    # Candidates for pruning after the top `keep`
+    candidates = infos[keep:]
+    for info in candidates:
+        # Preserve any pre-* label (e.g. pre-migrate, pre-curation-import, pre-dedupe, etc.)
+        if info.label and (info.label.startswith("pre-") or info.label.startswith("pre_")):
+            continue
         info.path.unlink(missing_ok=True)
         sidecar = info.path.with_suffix(info.path.suffix + ".json")
         sidecar.unlink(missing_ok=True)

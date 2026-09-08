@@ -7,6 +7,7 @@ from pathlib import Path
 
 import sqlite_vec
 
+from chatvault import backup as backup_mod
 from chatvault import hashing
 from chatvault.config import Config
 
@@ -46,14 +47,12 @@ def _pending_migrations(conn: sqlite3.Connection) -> list[Path]:
 
 
 def migrate(config: Config) -> list[str]:
-    """Apply pending migrations. Backs up the DB file first if it already exists.
+    """Apply pending migrations. Takes a compressed backup first if DB exists.
 
     Returns the list of migration filenames that were applied.
     """
-    db_existed = config.db_path.exists()
-    if db_existed:
-        backup = config.db_dir / f"chatvault.sqlite.bak-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
-        shutil.copy2(config.db_path, backup)
+    if config.db_path.exists():
+        backup_mod.create_backup(config, label="pre-migrate")
 
     conn = connect(config)
     try:

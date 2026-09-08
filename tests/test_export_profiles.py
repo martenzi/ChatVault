@@ -69,7 +69,11 @@ def test_lean_profile_truncates_long_tool_body(conn):
     assert "[tool: web_search, 1,204 chars omitted]" in content
 
 
-def test_lean_profile_drops_thinking(conn):
+def test_lean_profile_keeps_thinking(conn):
+    """Spec docs/50_SPEC_ingestion_fidelity_v1.md §1 corrects an earlier draft:
+    the TOOLS/`lean` tier is 'the conversational process — tool calls,
+    thinking, explicit failures', not dialogue-only. `thinking` therefore now
+    belongs in `lean` (as well as `full`), and is only absent from `read`."""
     blocks = [
         make_block(0, "thinking", "chain of thought", raw={}),
         make_block(1, "text", "answer", raw={}),
@@ -77,8 +81,10 @@ def test_lean_profile_drops_thinking(conn):
     result = _load(conn, _conv_with_blocks(blocks))
     row = export.get_conversations_by_ids(conn, [result.conv_id])[0]
 
-    content = export.render_profile(conn, row, profile="lean")
-    assert "chain of thought" not in content
+    lean = export.render_profile(conn, row, profile="lean")
+    read = export.render_profile(conn, row, profile="read")
+    assert "chain of thought" in lean
+    assert "chain of thought" not in read
 
 
 def test_full_profile_keeps_everything_uncollapsed(conn):
@@ -209,6 +215,123 @@ def test_lean_dialogue_integrity_keeps_prose_verbatim(conn):
     lean = export.render_profile(conn, row, profile="lean")
     assert long_prose in lean
     assert long_code in lean
+
+
+def test_thinking_block_visibility_is_driven_by_block_type_not_role(conn):
+    """Spec docs/50_SPEC_ingestion_fidelity_v1.md §1.1 / §7.3 — the central
+    design rule: profile tier membership is decided by blocks.type, never by
+    messages.role. Providers file reasoning under inconsistent role names, so
+    a `thinking` block must be treated identically in `lean`/`full` whether
+    it hangs off a `role='system'` message or a `role='assistant'` message —
+    and absent from `read` in both cases. This is the regression guard
+    against ever reintroducing a role allow-list."""
+    msgs = [
+        make_message(
+            0, "user", None, "2026-01-01T00:00:00",
+            [make_block(0, "text", "the question", raw={})], raw={},
+        ),
+        make_message(
+            1, "system", None, "2026-01-01T00:00:01",
+            [make_block(0, "thinking", "reasoning filed under system", raw={})], raw={},
+        ),
+        make_message(
+            2, "assistant", None, "2026-01-01T00:00:02",
+            [make_block(0, "thinking", "reasoning filed under assistant", raw={})], raw={},
+        ),
+        make_message(
+            3, "assistant", None, "2026-01-01T00:00:03",
+            [make_block(0, "text", "the final answer", raw={})], raw={},
+        ),
+    ]
+    conv = make_conversation(
+        platform="synthetic", native_id="role-vs-type", title="role vs type", project=None,
+        started_at="2026-01-01T00:00:00", ended_at="2026-01-01T00:00:03",
+        source_path="synthetic", raw={}, messages=msgs,
+    )
+    result = _load(conn, conv)
+    row = export.get_conversations_by_ids(conn, [result.conv_id])[0]
+
+    read = export.render_profile(conn, row, profile="read")
+    lean = export.render_profile(conn, row, profile="lean")
+    full = export.render_profile(conn, row, profile="full")
+
+    assert "reasoning filed under system" not in read
+    assert "reasoning filed under assistant" not in read
+
+    for content in (lean, full):
+        assert "reasoning filed under system" in content
+        assert "reasoning filed under assistant" in content
+
+
+def test_tool_result_on_tool_role_message_follows_block_type_not_role(conn):
+    """Spec §2.2/§7.3 — a `tool_result` block on a `role='tool'` message must
+    be absent from `read` (not a dialogue block type) and present in
+    `lean`/`full` (subject to the existing collapse/budget logic), exactly
+    as it would be on any other role. This is the case Defect A broke:
+    adapters that file tool traffic on its own `role='tool'` message used to
+    lose it entirely under every profile including `full`."""
+    msgs = [
+        make_message(
+            0, "user", None, "2026-01-01T00:00:00",
+            [make_block(0, "text", "run the search", raw={})], raw={},
+        ),
+        make_message(
+            1, "tool", None, "2026-01-01T00:00:01",
+            [make_block(0, "tool_result", "short search output", raw={}, tool_name="search_docs")],
+            raw={},
+        ),
+        make_message(
+            2, "assistant", None, "2026-01-01T00:00:02",
+            [make_block(0, "text", "here's what I found", raw={})], raw={},
+        ),
+    ]
+    conv = make_conversation(
+        platform="synthetic", native_id="tool-role", title="tool role", project=None,
+        started_at="2026-01-01T00:00:00", ended_at="2026-01-01T00:00:02",
+        source_path="synthetic", raw={}, messages=msgs,
+    )
+    result = _load(conn, conv)
+    row = export.get_conversations_by_ids(conn, [result.conv_id])[0]
+
+    read = export.render_profile(conn, row, profile="read")
+    lean = export.render_profile(conn, row, profile="lean")
+    full = export.render_profile(conn, row, profile="full")
+
+    assert "short search output" not in read
+    assert "here's what I found" in read
+
+    assert "short search output" in lean
+    assert "short search output" in full
+
+
+def test_message_with_all_blocks_filtered_is_skipped_entirely(conn):
+    """Spec §2.2 — a message whose every block is filtered out by the
+    profile's block-type policy must not render an empty heading. `thinking`
+    is not a `read` block type (and isn't a tool block, so it doesn't get
+    the tool-collapse bypass), so a message made up entirely of `thinking`
+    must vanish from `read` completely rather than leaving a bare heading."""
+    msgs = [
+        make_message(
+            0, "user", None, "2026-01-01T00:00:00",
+            [make_block(0, "text", "the question", raw={})], raw={},
+        ),
+        make_message(
+            1, "assistant", None, "2026-01-01T00:00:01",
+            [make_block(0, "thinking", "internal deliberation", raw={})],
+            raw={},
+        ),
+    ]
+    conv = make_conversation(
+        platform="synthetic", native_id="skip-empty", title="skip empty", project=None,
+        started_at="2026-01-01T00:00:00", ended_at="2026-01-01T00:00:01",
+        source_path="synthetic", raw={}, messages=msgs,
+    )
+    result = _load(conn, conv)
+    row = export.get_conversations_by_ids(conn, [result.conv_id])[0]
+
+    read = export.render_profile(conn, row, profile="read")
+    assert "internal deliberation" not in read
+    assert read.count("## Assistant") == 0
 
 
 def test_unknown_profile_raises(conn):

@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+
+import sqlite_vec
 
 from chatvault.config import Config
+
+BRAIN_MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations" / "brain"
 
 # docs/42_SPEC_brain_db.md §3 — verbatim from the spec, plus FTS sync triggers
 # following the exact pattern migrations/001_init.sql already uses for
@@ -10,11 +16,11 @@ from chatvault.config import Config
 # indexes the spec's schema block didn't list but its own query patterns
 # (list --kind, list --tag, verify's source_uid lookup) need.
 #
-# Deliberately no migrations framework, unlike chatvault.sqlite: this is a
-# new, small, single-purpose database. `CREATE ... IF NOT EXISTS` on every
-# statement makes connect() itself idempotent — schema changes later can
-# graduate to real migrations if the brain ever needs them, but there's
-# nothing to version yet.
+# This base schema is still the original idempotent CREATE-IF-NOT-EXISTS
+# bootstrap; everything from migrations/brain/002_brain_v2.sql onward is a
+# real, versioned migration (see migrate() below) — the "no migrations
+# framework yet" framing this comment used to carry stopped being true once
+# 45_SPEC_brain_v2_full.md needed one.
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS items (
   id            INTEGER PRIMARY KEY,
@@ -75,20 +81,75 @@ CREATE INDEX IF NOT EXISTS ix_itemlinks_to     ON item_links(to_id);
 """
 
 
-def connect(config: Config) -> sqlite3.Connection:
+def _pending_migrations(conn: sqlite3.Connection) -> list[Path]:
+    """Versioned migrations layered on top of the base SCHEMA_SQL above
+    (docs/45_SPEC_brain_v2_full.md §6 phase 1 onward). The base schema stays
+    the idempotent CREATE-IF-NOT-EXISTS bootstrap it always was — every
+    migration from 002 on is additive to it and, unlike the base schema,
+    runs exactly once, tracked in its own schema_migrations table (same
+    pattern as chatvault.sqlite's, in db.py, but a separate table in a
+    separate file — brain.sqlite's versioning is independent of the vault's)."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version     TEXT PRIMARY KEY,
+            applied_at  TEXT NOT NULL
+        )
+        """
+    )
+    applied = {row[0] for row in conn.execute("SELECT version FROM schema_migrations")}
+    all_migrations = sorted(BRAIN_MIGRATIONS_DIR.glob("*.sql"))
+    return [m for m in all_migrations if m.name not in applied]
+
+
+def migrate(conn: sqlite3.Connection) -> list[str]:
+    """Applies pending brain migrations against an already-open connection.
+    Returns the filenames applied (empty if already current)."""
+    pending = _pending_migrations(conn)
+    applied: list[str] = []
+    for path in pending:
+        conn.executescript(path.read_text())
+        conn.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+            (path.name, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+        applied.append(path.name)
+    return applied
+
+
+def connect(config: Config, auto_migrate: bool = True) -> sqlite3.Connection:
     """Opens (creating on first use) brain.sqlite — self-sufficient by
     construction: this never touches chatvault.sqlite, so every `brain`
     command that doesn't explicitly promote from the vault works with the
     vault absent, renamed, or deleted (spec §8's self-sufficiency and
-    portability criteria)."""
+    portability criteria).
+
+    Applies pending versioned migrations automatically (auto_migrate=True,
+    the default): brain.sqlite is single-user, local, and never has
+    concurrent writers, so there's no migration race to guard against —
+    every `brain` command self-heals to the latest schema the way base
+    SCHEMA_SQL already did. Callers that need to control migration timing
+    explicitly (backup-then-migrate, tests inspecting pre-migration state)
+    pass auto_migrate=False and call migrate() themselves."""
     path = config.brain_path
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
+    # migrations/brain/003_semantic_search.sql's item_embeddings is a
+    # sqlite-vec vec0 virtual table (same reasoning as db.py's identical
+    # load for the vault's own conv_embeddings) — loaded unconditionally so
+    # every brain command, not just embed/find --semantic, can open a
+    # connection without "no such module: vec0".
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
     conn.executescript(SCHEMA_SQL)
     conn.commit()
+    if auto_migrate:
+        migrate(conn)
     return conn
 
 

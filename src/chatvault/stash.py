@@ -196,8 +196,9 @@ def get_entry(conn: sqlite3.Connection, n: int) -> StashEntry:
 
 
 def resolve_pick(conn: sqlite3.Connection, pick: str) -> list[int]:
-    """Resolves a `--pick` spec ('1' or '1,4') against the stash's own list
-    (see list_all) — deliberately NOT `find`'s cached pick results.
+    """Resolves a `--pick` spec (see browse.parse_pick_spec: '1', '1,4',
+    '1-5', 'all,!3', ...) against the stash's own list (see list_all) —
+    deliberately NOT `find`'s cached pick results.
 
     `find`'s cache invalidates on any database write (content-based, via
     PRAGMA data_version — see browse.resolve_pick), and `stash add` is
@@ -207,15 +208,16 @@ def resolve_pick(conn: sqlite3.Connection, pick: str) -> list[int]:
     invalidates the cache `brief` would need to find it again. Resolving
     against the stash's own list sidesteps the problem entirely — it's
     recomputed fresh every call, so it can never go stale."""
+    from chatvault import browse as browse_mod  # deferred: avoid a module-load-order surprise
+
     entries_by_n = {e.n: e.conv_id for e in list_all(conn)}
+    try:
+        picked_rows = browse_mod.parse_pick_spec(pick, sorted(entries_by_n))
+    except ValueError as exc:
+        raise StashError(str(exc)) from exc
+
     conv_ids = []
-    for part in pick.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        if not part.lstrip("-").isdigit():
-            raise StashError(f"invalid row number: {part!r}")
-        n = int(part)
+    for n in picked_rows:
         if n not in entries_by_n:
             raise StashError(f"row {n} not in the stash (1-{len(entries_by_n)})")
         conv_ids.append(entries_by_n[n])

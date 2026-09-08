@@ -24,6 +24,9 @@ class Config:
     neo4j_uri: str
     neo4j_user: str
     neo4j_password: str
+    backup_dir_override: Path | None = None
+    archive_dir_override: Path | None = None
+    attachment_dir_override: Path | None = None
 
     @property
     def raw_dir(self) -> Path:
@@ -47,6 +50,37 @@ class Config:
         return self.db_dir / "brain.sqlite"
 
     @property
+    def backup_dir(self) -> Path:
+        if self.backup_dir_override:
+            try:
+                # If target is accessible (or creatable parent exists), use it
+                self.backup_dir_override.mkdir(parents=True, exist_ok=True)
+                return self.backup_dir_override
+            except (OSError, PermissionError):
+                pass
+        return self.db_dir / "backups"
+
+    @property
+    def archive_dir(self) -> Path:
+        if self.archive_dir_override:
+            try:
+                self.archive_dir_override.mkdir(parents=True, exist_ok=True)
+                return self.archive_dir_override
+            except (OSError, PermissionError):
+                pass
+        return self.root / "archive"
+
+    @property
+    def attachment_dir(self) -> Path:
+        if self.attachment_dir_override:
+            try:
+                self.attachment_dir_override.mkdir(parents=True, exist_ok=True)
+                return self.attachment_dir_override
+            except (OSError, PermissionError):
+                pass
+        return self.root / "attachments"
+
+    @property
     def exports_dir(self) -> Path:
         return self.root / "exports"
 
@@ -62,9 +96,16 @@ class Config:
 def load_config() -> Config:
     _load_dotenv(Path.cwd() / ".env")
     root = Path(os.environ.get("CHATVAULT_ROOT", str(Path.cwd()))).expanduser().resolve()
+    backup_dir_str = os.environ.get("CHATVAULT_BACKUP_DIR")
+    archive_dir_str = os.environ.get("CHATVAULT_ARCHIVE_DIR")
+    attachment_dir_str = os.environ.get("CHATVAULT_ATTACHMENT_DIR")
+
     return Config(
         root=root,
         neo4j_uri=os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
         neo4j_user=os.environ.get("NEO4J_USER", "neo4j"),
         neo4j_password=os.environ.get("NEO4J_PASSWORD", ""),
+        backup_dir_override=Path(backup_dir_str).expanduser().resolve() if backup_dir_str else None,
+        archive_dir_override=Path(archive_dir_str).expanduser().resolve() if archive_dir_str else None,
+        attachment_dir_override=Path(attachment_dir_str).expanduser().resolve() if attachment_dir_str else None,
     )

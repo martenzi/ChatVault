@@ -174,18 +174,54 @@ def tree_relative_dir(tree: str, matched_tag: str) -> Path:
 # `lean` keeps short tool bodies but collapses anything over its budget.
 # `full` never collapses. `--max-tool-chars` overrides whichever budget the
 # profile picked; `--blocks` is a separate axis that restricts block types
-# outright and wins over the profile's own thinking-block default.
+# outright and wins over the profile's own block-type default.
 #
 # These are not a size ladder (spec §4 note): `read` optimises for human eyes
 # (collapse every tool call), `lean` for an AI's context window (keep short
 # tool results verbatim, they're often the signal). `lean` can legitimately
 # come out larger than `read` on a conversation with many small tool calls —
 # only `full >= read` and `full >= lean` are guaranteed. Text/code blocks are
-# never touched by any profile, only thinking (dropped) and tool_use/
-# tool_result (collapsed) are — this is what keeps dialogue integrity: lean
-# reproduces every user/assistant prose block verbatim and complete.
+# never touched by any profile; thinking is dropped only below `lean` (it's
+# part of `lean`'s "conversational process" tier per
+# docs/50_SPEC_ingestion_fidelity_v1.md §1 — a corrected earlier draft had it
+# `full`-only) and tool_use/tool_result are always collapsed per the active
+# budget — this is what keeps dialogue integrity: every profile reproduces
+# every user/assistant prose block verbatim and complete.
 PROFILES = {"read", "lean", "full"}
 _PROFILE_TOOL_BUDGET = {"read": 0, "lean": 500, "full": None}
+
+# docs/50_SPEC_ingestion_fidelity_v1.md §2.2 — what each profile SHOWS, keyed
+# on blocks.type — the only tier axis. Mirrors the standalone converter's
+# three modes (CHAT/TOOLS/RAW), inverted per Decision D3: nothing is dropped
+# from the DB, only from this render.
+#
+# Crucially, membership is NOT keyed on messages.role. Providers disagree
+# about which role they file reasoning under (spec §1.1), so a role-keyed
+# policy would hide correctly-classified `thinking` blocks for some providers
+# and not others. Block type is the provider-independent fact. A message
+# renders if at least one of its blocks survives this filter; role is purely
+# presentational (it labels the heading).
+#
+# `tool_use`/`tool_result` are listed here for documentation fidelity to the
+# spec's tier table, but at runtime their visibility is governed entirely by
+# the pre-existing collapse budget (`_maybe_collapse_tool_block`), not by
+# this matrix — that mechanism already makes them profile-appropriate
+# (a one-line stub under `read`, budgeted under `lean`, verbatim under
+# `full`) and predates this fix. An explicit `--blocks` override still wins
+# outright and is applied to tool blocks too.
+_PROFILE_BLOCK_TYPES: dict[str, set[str] | None] = {
+    # CHAT tier — dialogue only.
+    "read": {"text", "code", "attachment", "image"},
+    # TOOLS tier — the conversational process: dialogue + what the model was
+    # doing + how it failed. NOT system prompts, NOT injected rules files,
+    # NOT internal system chatter (those are noisy and repetitive; they're RAW).
+    "lean": {
+        "text", "code", "attachment", "image",
+        "thinking", "tool_use", "tool_result", "error", "refusal", "audio",
+    },
+    # RAW tier — everything, for debugging and model-performance evaluation.
+    "full": None,  # None = no filtering whatsoever
+}
 
 
 def _resolve_tool_budget(profile: str, max_tool_chars: int | None) -> tuple[int | None, str]:
@@ -224,28 +260,46 @@ def render_profile(
 ) -> str:
     """Render via a named profile (read/lean/full) instead of a raw template.
     `blocks` restricts output to a set of block types ('text,code'), overriding
-    the profile's default thinking-block handling. `max_tool_chars` overrides
-    the profile's tool-call collapsing budget."""
+    the profile's default block-type visibility (see `_PROFILE_BLOCK_TYPES`).
+    `max_tool_chars` overrides the profile's tool-call collapsing budget."""
     if profile not in PROFILES:
         raise ValueError(f"profile must be one of {sorted(PROFILES)}, got {profile!r}")
 
     budget, style = _resolve_tool_budget(profile, max_tool_chars)
-    allowed_types = {t.strip() for t in blocks.split(",") if t.strip()} if blocks else None
+    # --blocks overrides the profile's default block-type set outright; same
+    # axis as _PROFILE_BLOCK_TYPES, just made explicit rather than defaulted.
+    explicit_override = blocks is not None
+    allowed_types = (
+        {t.strip() for t in blocks.split(",") if t.strip()}
+        if explicit_override
+        else _PROFILE_BLOCK_TYPES[profile]
+    )
 
     conv = _fetch_conversation(conn, conv_row)
     for msg in conv["messages"]:
         filtered = []
         for block in msg["blocks"]:
             btype = block["type"]
-            if allowed_types is not None:
-                if btype not in allowed_types:
+            is_tool_block = btype in ("tool_use", "tool_result")
+            # tool_use/tool_result visibility is governed entirely by the
+            # existing collapse budget below, not by the block-type matrix —
+            # that mechanism already makes them profile-appropriate (fully
+            # collapsed to a one-line stub under `read`, budgeted under
+            # `lean`, verbatim under `full`) and predates this fix; §2.2
+            # keeps it "unchanged, orthogonal to visibility". An explicit
+            # --blocks override still wins outright, since it's the more
+            # specific ask.
+            if not (is_tool_block and not explicit_override):
+                if allowed_types is not None and btype not in allowed_types:
                     continue
-            elif profile != "full" and btype == "thinking":
-                continue
-            if btype in ("tool_use", "tool_result"):
+            if is_tool_block:
                 block = _maybe_collapse_tool_block(block, budget, style)
             filtered.append(block)
+        # A message renders only if at least one of its blocks survived the
+        # filter — spec §2.2. `messages.role` is never itself a filter; it
+        # only labels the heading in the template.
         msg["blocks"] = filtered
+    conv["messages"] = [msg for msg in conv["messages"] if msg["blocks"]]
 
     env = _env()
     tmpl = env.get_template("profile.md.j2")

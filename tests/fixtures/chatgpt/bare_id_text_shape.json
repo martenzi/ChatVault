@@ -1,0 +1,35 @@
+[
+  {
+    "title": "Bare id/text shape regression",
+    "create_time": 1770200000,
+    "update_time": 1770200100,
+    "conversation_id": "conv-bare-shape",
+    "current_node": "b",
+    "mapping": {
+      "root": {"id": "root", "message": null, "parent": null, "children": ["a"]},
+      "a": {
+        "id": "a",
+        "parent": "root",
+        "children": ["b"],
+        "message": {
+          "id": "a",
+          "author": {"role": "user"},
+          "create_time": 1770200000,
+          "content": {"content_type": "text", "parts": ["What happened to that canvas doc?"]}
+        }
+      },
+      "b": {
+        "id": "b",
+        "parent": "a",
+        "children": [],
+        "message": {
+          "id": "b",
+          "author": {"role": "assistant"},
+          "create_time": 1770200050,
+          "metadata": {"model_slug": "gpt-4o"},
+          "content": {"id": "38c4f5d7-0f37-4d4c-8923-2215fd2e217a", "text": ""}
+        }
+      }
+    }
+  }
+]

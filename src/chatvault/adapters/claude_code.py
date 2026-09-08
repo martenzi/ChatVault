@@ -6,7 +6,7 @@ from typing import Iterator
 
 import orjson
 
-from chatvault.adapters.base import make_block, make_conversation, make_message
+from chatvault.adapters.base import make_attachment, make_block, make_conversation, make_message
 
 platform = "claude_code"
 name = "claude_code"
@@ -98,6 +98,52 @@ def _blocks_from_content(content) -> list[dict]:
             )
         elif item_type == "image":
             blocks.append(make_block(idx, "image", "", raw=item))
+        elif item_type == "fallback":
+            # docs/audit-shapes/claude_code-unknown.md: 2 of this platform's 3
+            # `unknown` blocks are this exact shape — `keys=from,to,type |
+            # type='fallback'` (report line 12) — a model-fallback routing
+            # event (`$.from.model`/`$.to.model`, 28/30 total chars, e.g.
+            # "claude-fable-5" -> "claude-opus-4-8", report lines 24-25), not
+            # a conversational turn. Unambiguous, same conceptual bucket as
+            # identifiers.NON_MESSAGE_RECORD_TYPES's "model_change" (session
+            # bookkeeping the tool itself drops; ChatVault classifies instead
+            # of dropping, per spec §1/§3.3) — so `meta`, not `unknown`.
+            from_model = (item.get("from") or {}).get("model")
+            to_model = (item.get("to") or {}).get("model")
+            text = f"model fallback: {from_model} -> {to_model}" if from_model or to_model else ""
+            blocks.append(make_block(idx, "meta", text, raw=item))
+        elif item_type == "document":
+            # Same report, line 13 + lines 23/27-28: the remaining 1-of-3
+            # `unknown` block is `keys=source,type | type='document'` with
+            # `source.type='base64'`, `source.media_type='application/pdf'`
+            # and `source.data` a 272,912-char base64 PDF payload — a real
+            # attachment, not an ambiguous shape or a text blob to dump into
+            # `text` (that would bloat `text`/embeddings with opaque base64
+            # for no benefit). Classified `attachment`; the base64 bytes stay
+            # exactly where they already are, in `raw` (spec §4.4 rule 4 —
+            # raw_json is untouched), not duplicated into the attachment
+            # payload's own `content` field.
+            source = item.get("source") if isinstance(item.get("source"), dict) else {}
+            media_type = source.get("media_type")
+            ext = media_type.split("/")[-1] if isinstance(media_type, str) and "/" in media_type else None
+            blocks.append(
+                make_block(
+                    idx,
+                    "attachment",
+                    "",
+                    raw=item,
+                    attachment=make_attachment(
+                        filename=None,
+                        mime=media_type,
+                        ext=ext,
+                        bytes_=len(source.get("data", "")) if isinstance(source.get("data"), str) else None,
+                        content=None,
+                        availability="missing",
+                        role="upload",
+                        raw=source,
+                    ),
+                )
+            )
         else:
             blocks.append(make_block(idx, "unknown", "", raw=item))
     return blocks

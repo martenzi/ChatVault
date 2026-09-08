@@ -15,7 +15,7 @@ def list_attachments(
     conn: sqlite3.Connection,
     conv: int | None = None,
     project: int | None = None,
-    platform: str | None = None,
+    platform: str | tuple[str, ...] | None = None,
     type_: str | None = None,
     missing: bool = False,
 ) -> list[sqlite3.Row]:
@@ -31,8 +31,13 @@ def list_attachments(
         joins += " JOIN attachment_links al_p ON al_p.attachment_id = a.id AND al_p.target_type = 'project' AND al_p.target_id = ?"
         params.append(project)
     if platform:
-        clauses.append("a.platform = ?")
-        params.append(platform)
+        names = (platform,) if isinstance(platform, str) else tuple(platform)
+        if len(names) == 1:
+            clauses.append("a.platform = ?")
+            params.append(names[0])
+        else:
+            clauses.append(f"a.platform IN ({','.join('?' * len(names))})")
+            params.extend(names)
     if type_:
         clauses.append("a.ext = ?")
         params.append(type_)

@@ -273,6 +273,100 @@ def _insert_messages_and_blocks(conn: sqlite3.Connection, conv_id: int, cir: dic
     return message_count, block_count, char_count
 
 
+def reprocess_conversation(
+    conn: sqlite3.Connection,
+    cir: dict,
+    source_file_id: int,
+    position: int,
+) -> LoadResult:
+    rows = conn.execute(
+        "SELECT id, uid, native_id, content_hash FROM conversations WHERE source_file_id IS ? ORDER BY id",
+        (source_file_id,),
+    ).fetchall()
+    if position >= len(rows):
+        raise ValueError(
+            f"reprocess produced more conversations than source file {source_file_id} originally contained"
+        )
+
+    existing = rows[position]
+    if existing["native_id"] != cir.get("native_id"):
+        raise ValueError(
+            f"reprocess conversation {position + 1} native_id changed from "
+            f"{existing['native_id']!r} to {cir.get('native_id')!r}"
+        )
+
+    conv_id = existing["id"]
+    hashes = _compute_hashes(cir)
+    if existing["content_hash"] == hashes["content_hash"]:
+        backfilled = _backfill_attachments(conn, conv_id, cir)
+        detail = "identical content already present"
+        if backfilled:
+            detail += f"; backfilled attachment metadata on {backfilled} block(s)"
+        return LoadResult("noop", conv_id, existing["uid"], detail)
+
+    messages = conn.execute(
+        "SELECT id, idx FROM messages WHERE conv_id = ? ORDER BY idx", (conv_id,)
+    ).fetchall()
+    if [row["idx"] for row in messages] != [msg["idx"] for msg in cir["messages"]]:
+        raise ValueError(f"reprocess changed message structure for conversation {existing['uid']}")
+
+    block_count = 0
+    char_count = 0
+    for msg, msg_row, msg_hash, block_hashes in zip(
+        cir["messages"], messages, hashes["message_hashes"], hashes["per_message_block_hashes"]
+    ):
+        blocks = conn.execute(
+            "SELECT id, idx FROM blocks WHERE msg_id = ? ORDER BY idx", (msg_row["id"],)
+        ).fetchall()
+        if [row["idx"] for row in blocks] != [block["idx"] for block in msg["blocks"]]:
+            raise ValueError(f"reprocess changed block structure for conversation {existing['uid']}")
+
+        msg_chars = sum(len(block["text"]) for block in msg["blocks"])
+        conn.execute(
+            """
+            UPDATE messages
+            SET role = ?, model = ?, created_at = ?, content_hash = ?, char_count = ?, excluded = ?
+            WHERE id = ?
+            """,
+            (
+                msg["role"], msg.get("model"), msg.get("created_at"), msg_hash,
+                msg_chars, int(msg.get("excluded", 0)), msg_row["id"],
+            ),
+        )
+        char_count += msg_chars
+
+        for block, block_row, block_hash in zip(msg["blocks"], blocks, block_hashes):
+            conn.execute(
+                """
+                UPDATE blocks
+                SET type = ?, tool_name = ?, text = ?, char_count = ?, content_hash = ?
+                WHERE id = ?
+                """,
+                (
+                    block["type"], block.get("tool_name"), block["text"],
+                    len(block["text"]), block_hash, block_row["id"],
+                ),
+            )
+            block_count += 1
+
+    conn.execute(
+        """
+        UPDATE conversations
+        SET platform = ?, native_id = ?, title = ?, project = ?, model_primary = ?,
+            started_at = ?, ended_at = ?, message_count = ?, block_count = ?, char_count = ?,
+            head_hash = ?, content_hash = ?
+        WHERE id = ?
+        """,
+        (
+            cir["platform"], cir.get("native_id"), cir.get("title"), cir.get("project"),
+            _model_primary(cir), cir.get("started_at"), cir.get("ended_at"), len(messages),
+            block_count, char_count, hashes["head_hash"], hashes["content_hash"], conv_id,
+        ),
+    )
+    _backfill_attachments(conn, conv_id, cir)
+    return LoadResult("reprocessed", conv_id, existing["uid"], "updated extracted content in place")
+
+
 def load_conversation(conn: sqlite3.Connection, cir: dict, source_file_id: int) -> LoadResult:
     hashes = _compute_hashes(cir)
     content_hash = hashes["content_hash"]
@@ -314,7 +408,25 @@ def load_conversation(conn: sqlite3.Connection, cir: dict, source_file_id: int) 
         conn.execute("UPDATE conversations SET superseded_by = ? WHERE id = ?", (conv_id, existing["id"]))
         return LoadResult("superseded", conv_id, uid, f"superseded conversation id={existing['id']}")
 
-    alt_uid = f"{uid}#dup-{content_hash[:8]}"
+    # Base alt_uid is deterministic (uid + content_hash prefix), which is right
+    # for the common case: the same ambiguous duplicate re-ingested later
+    # resolves to the same row instead of piling up copies. But three or more
+    # *distinct source files* can independently produce byte-identical CIR
+    # content that collides with this same uid (seen for real: sandboxed
+    # Claude Desktop "local agent mode" sessions can carry duplicate
+    # transcript copies) — the second occurrence's alt_uid is a legitimate
+    # re-resolve to the same row (handled above via existing/content_hash
+    # match on a *prior insert's own uid*), but a third+ file racing the
+    # same base alt_uid before that row exists would otherwise hit a UNIQUE
+    # constraint on conversations.uid. Disambiguate with an incrementing
+    # suffix so ingest never crashes on this — still fully deterministic and
+    # idempotent (a re-ingest of the same file set lands on the same uids).
+    base_alt_uid = f"{uid}#dup-{content_hash[:8]}"
+    alt_uid = base_alt_uid
+    suffix = 1
+    while conn.execute("SELECT 1 FROM conversations WHERE uid = ?", (alt_uid,)).fetchone() is not None:
+        suffix += 1
+        alt_uid = f"{base_alt_uid}-{suffix}"
     conv_id = _insert_conversation_row(conn, cir, alt_uid, content_hash, head_hash, source_file_id, now, hashes)
     return LoadResult(
         "flagged_duplicate",

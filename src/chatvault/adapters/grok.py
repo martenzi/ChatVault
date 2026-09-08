@@ -113,6 +113,28 @@ def _response_blocks(resp: dict) -> list[dict]:
             blocks.append(make_block(idx, "thinking", trace_text, raw=trace))
             idx += 1
 
+    # docs/audit-shapes/grok-unknown.md: a bare top-level `resp.thinking_trace`
+    # string (NOT nested under `agent_thinking_traces`) accounts for 5 of the
+    # 19 `unknown` blocks on this platform — `$.thinking_trace`: 5
+    # occurrences, 40,206 total chars (report line 29), sibling shape to
+    # `agent_thinking_traces[].thinking_trace` above, not a duplicate of it
+    # (these responses have no `agent_thinking_traces` list at all — report's
+    # shape-signature table, sigs on lines 13/18). Same content, different
+    # container; real reasoning prose (example: a Swedish-language multi-step
+    # analysis), so it gets the same `thinking` treatment.
+    bare_trace = resp.get("thinking_trace") or ""
+    if bare_trace and not any(b["type"] == "thinking" for b in blocks):
+        blocks.append(make_block(idx, "thinking", bare_trace, raw={"thinking_trace": bare_trace}))
+        idx += 1
+
+    # Same report, line 40: `$.error` — 1 occurrence, "Failed to send
+    # request." (23 chars) — a real, surfaced API failure, not an ambiguous
+    # shape. `error` is in BLOCK_TYPES (adapters/base.py) precisely for this.
+    err = resp.get("error") or ""
+    if err:
+        blocks.append(make_block(idx, "error", err, raw={"error": err}))
+        idx += 1
+
     # steps[].web_search_results is a per-step copy of the SAME results
     # already present in the top-level response.web_search_results rollup
     # — confirmed by direct comparison on real data (identical counts,
@@ -154,6 +176,19 @@ def _response_blocks(resp: dict) -> list[dict]:
         )
         idx += 1
 
+    # docs/audit-shapes/grok-unknown.md: what's left after all of the above
+    # (message/thinking_trace/agent_thinking_traces/steps/web_search_results/
+    # file_attachments/error) is the remaining ~12-of-19 shapes — `partial`
+    # and/or `manual` bool flags true, `metadata` null or `{}`, every string
+    # leaf either absent or zero-length (report's "Zero-volume leaf paths"
+    # table: `$.message`, `$.metadata.deepsearchPreset`, etc. are always
+    # empty). These are genuinely-empty/interrupted responses (a send that
+    # never produced content), not a shape whose *meaning* is unclear — but
+    # per spec §4.4 rule 2 there is no content-bearing leaf path to promote
+    # `text` from either way, so this correctly stays `unknown` with empty
+    # text rather than fabricating content. review/shape-unclear is applied
+    # at ingest time (chatvault.tags.flag_shape_unclear, wired in
+    # ingest.py), not here — adapters emit CIR dicts only, no DB handle.
     if not blocks:
         blocks.append(make_block(0, "unknown", "", raw=resp))
 

@@ -4,6 +4,12 @@ from pathlib import Path
 from typing import Iterator, Protocol
 
 # The closed set of block.type values every adapter must map into.
+#
+# injected_context / meta / refusal / audio added per
+# docs/50_SPEC_ingestion_fidelity_v1.md §3.3 (Phase 2). No adapter emits
+# them yet — that wiring is a later phase (§4) — this only extends the
+# recognized vocabulary so make_block() doesn't demote them to "unknown"
+# once an adapter starts using chatvault.adapters.identifiers.
 BLOCK_TYPES = {
     "text",
     "thinking",
@@ -15,6 +21,10 @@ BLOCK_TYPES = {
     "system",
     "error",
     "unknown",
+    "injected_context",
+    "meta",
+    "refusal",
+    "audio",
 }
 
 

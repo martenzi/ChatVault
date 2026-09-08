@@ -33,7 +33,7 @@ def _fts_phrase(query: str) -> str:
 def find(
     conn: sqlite3.Connection,
     query: str | None = None,
-    platform: str | None = None,
+    platform: str | tuple[str, ...] | None = None,
     since: str | None = None,
     before: str | None = None,
     project: str | None = None,
@@ -52,8 +52,13 @@ def find(
     clauses = ["1=1"]
     params: list = []
     if platform:
-        clauses.append("c.platform = ?")
-        params.append(platform)
+        names = (platform,) if isinstance(platform, str) else tuple(platform)
+        if len(names) == 1:
+            clauses.append("c.platform = ?")
+            params.append(names[0])
+        else:
+            clauses.append(f"c.platform IN ({','.join('?' * len(names))})")
+            params.extend(names)
     if since:
         clauses.append("c.started_at >= ?")
         params.append(since)
@@ -141,11 +146,59 @@ def save_result_cache(
     path.write_text(json.dumps(data))
 
 
+def _expand_pick_token(token: str) -> list[int]:
+    if "-" in token:
+        start_s, _, end_s = token.partition("-")
+        if not (start_s.isdigit() and end_s.isdigit()):
+            raise ValueError(f"invalid range: {token!r}")
+        start, end = int(start_s), int(end_s)
+        if start > end:
+            raise ValueError(f"invalid range: {token!r} (start comes after end)")
+        return list(range(start, end + 1))
+    if not token.isdigit():
+        raise ValueError(f"invalid row number: {token!r}")
+    return [int(token)]
+
+
+def parse_pick_spec(pick: str, all_rows: list[int]) -> list[int]:
+    """Parse a --pick spec into the row numbers it selects, in resolution
+    order (duplicates collapsed to their first mention). Grammar, comma
+    separated:
+      - a row number ('3')
+      - an inclusive range ('1-5')
+      - the literal 'all'
+      - any of the above prefixed with '!' to exclude it (e.g. '!3', '!5-9')
+    A spec made only of exclusions (e.g. '!3') implicitly starts from 'all'.
+    Row numbers aren't validated against `all_rows` here beyond expanding
+    'all' — the caller checks each one against its own row -> id mapping so
+    the error names the right source ('find' vs 'stash')."""
+    includes: list[int] = []
+    excludes: set[int] = set()
+    saw_include = False
+    for part in pick.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        negate = part.startswith("!")
+        body = part[1:] if negate else part
+        expanded = list(all_rows) if body.lower() == "all" else _expand_pick_token(body)
+        if negate:
+            excludes.update(expanded)
+        else:
+            saw_include = True
+            for n in expanded:
+                if n not in includes:
+                    includes.append(n)
+    if not saw_include:
+        includes = list(all_rows)
+    return [n for n in includes if n not in excludes]
+
+
 def resolve_pick(conn: sqlite3.Connection, config: Config, pick: str) -> list[int]:
-    """Resolve a --pick spec ('2' or '1,3') against the cached last `find`
-    result. Cache invalidation is content-based (PRAGMA data_version + db
-    mtime), never time-based — a three-day-old result set is still valid if
-    nothing was ingested since."""
+    """Resolve a --pick spec (see `parse_pick_spec`: '2', '1,3', '1-5',
+    'all,!3', ...) against the cached last `find` result. Cache invalidation
+    is content-based (PRAGMA data_version + db mtime), never time-based — a
+    three-day-old result set is still valid if nothing was ingested since."""
     path = cache_path(config)
     if not path.exists():
         raise StaleCacheError("no cached `find` results — run `chatvault find` first")
@@ -158,14 +211,10 @@ def resolve_pick(conn: sqlite3.Connection, config: Config, pick: str) -> list[in
         )
 
     by_row = {r["row"]: r["conv_id"] for r in data["rows"]}
+    picked_rows = parse_pick_spec(pick, sorted(by_row))
+
     conv_ids = []
-    for part in pick.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        if not part.lstrip("-").isdigit():
-            raise ValueError(f"invalid row number: {part!r}")
-        n = int(part)
+    for n in picked_rows:
         if n not in by_row:
             raise ValueError(f"row {n} not in the last `find` results (1-{len(by_row)})")
         conv_ids.append(by_row[n])

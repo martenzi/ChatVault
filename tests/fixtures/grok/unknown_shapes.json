@@ -1,0 +1,63 @@
+{
+  "conversations": [
+    {
+      "conversation": {
+        "id": "grok-conv-unknown-shapes",
+        "title": "Unknown-shape regression",
+        "workspace_id": "ws-2",
+        "leaf_response_id": "does-not-resolve",
+        "create_time": {"$date": {"$numberLong": "1770100000000"}},
+        "modify_time": {"$date": {"$numberLong": "1770100400000"}}
+      },
+      "responses": [
+        {
+          "response": {
+            "_id": "u1",
+            "parent_response_id": null,
+            "sender": "human",
+            "message": "Think about this for me.",
+            "create_time": {"$date": {"$numberLong": "1770100000000"}}
+          }
+        },
+        {
+          "response": {
+            "_id": "u2",
+            "parent_response_id": "u1",
+            "sender": "ASSISTANT",
+            "message": "",
+            "thinking_trace": "Bare top-level thinking_trace, not nested under agent_thinking_traces.",
+            "model": "grok-4",
+            "create_time": {"$date": {"$numberLong": "1770100100000"}}
+          }
+        },
+        {
+          "response": {
+            "_id": "u3",
+            "parent_response_id": "u2",
+            "sender": "ASSISTANT",
+            "message": "",
+            "error": "Failed to send request.",
+            "model": "grok-4",
+            "create_time": {"$date": {"$numberLong": "1770100200000"}}
+          }
+        },
+        {
+          "response": {
+            "_id": "u4",
+            "parent_response_id": "u3",
+            "sender": "ASSISTANT",
+            "message": "",
+            "partial": true,
+            "manual": true,
+            "metadata": {},
+            "model": "grok-4",
+            "create_time": {"$date": {"$numberLong": "1770100300000"}}
+          }
+        }
+      ]
+    }
+  ],
+  "projects": [],
+  "tasks": [],
+  "media_posts": []
+}

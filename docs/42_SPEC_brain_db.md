@@ -7,6 +7,8 @@
 > **Update, 2026-08-16 — schema + `promote`/`add`/`list`/`show`/`search` built, by explicit user decision to skip the "two weeks first" wait in §7 (irrelevant to this user's actual workflow).** `brain.sqlite` is live: `chatvault brain promote [--uid/--pick/--from-stash]`, `brain add`, `brain list`, `brain show`, `brain search`. Not built, still: `--extract`, `relate`, `supersede`, `confidence` workflows (§7 step 4), and the Datasette/MCP/launcher interfaces (§7 step 5). All §8 acceptance criteria relevant to this scope verified directly against a scratch copy of real production data — full detail: STATUS.md build log, 2026-08-16.
 >
 > **Update, 2026-08-16, later the same day — `db/brain.sqlite` is now the real, permanent file in production**, not just scratch-tested. Confirmed empty and ready for real `stash add`/`brain promote` usage; production `chatvault.sqlite` verified unaffected (`chatvault stats`/`verify`/integrity all unchanged). Full detail: STATUS.md build log.
+>
+> **Superseded, 2026-08-29 — by `docs/45_SPEC_brain_v2_full.md`.** §3 (schema) and §4 (commands) below are historical only; the live schema and command grammar are v2's (migration `002_brain_v2.sql`, `brain <verb> <noun>` grammar — no bare `brain add`/`brain list`/`brain show`/`brain search` any more, all replaced by noun-qualified equivalents: `brain add entry`, `brain list entries`, `brain show entry <ref>`, `brain find <query>`). `promote` (§4) is the one command v2 kept unchanged. Full detail: STATUS.md build log, 2026-08-29.
 
 ---
 
