@@ -209,8 +209,6 @@ def _backfill_attachments(conn: sqlite3.Connection, conv_id: int, cir: dict) -> 
             _link_attachment(conn, attachment_id, "message", msg_row_id, att.get("role", "upload"), now)
             updated += 1
 
-    if updated:
-        conn.commit()
     return updated
 
 
@@ -283,17 +281,15 @@ def reprocess_conversation(
         "SELECT id, uid, native_id, content_hash FROM conversations WHERE source_file_id IS ? ORDER BY id",
         (source_file_id,),
     ).fetchall()
-    if position >= len(rows):
-        raise ValueError(
-            f"reprocess produced more conversations than source file {source_file_id} originally contained"
-        )
-
-    existing = rows[position]
-    if existing["native_id"] != cir.get("native_id"):
-        raise ValueError(
-            f"reprocess conversation {position + 1} native_id changed from "
-            f"{existing['native_id']!r} to {cir.get('native_id')!r}"
-        )
+    native_id = cir.get("native_id")
+    if native_id is not None:
+        existing = next((row for row in rows if row["native_id"] == native_id), None)
+        if existing is None:
+            return load_conversation(conn, cir, source_file_id)
+    elif position < len(rows) and rows[position]["native_id"] is None:
+        existing = rows[position]
+    else:
+        return load_conversation(conn, cir, source_file_id)
 
     conv_id = existing["id"]
     hashes = _compute_hashes(cir)
@@ -312,14 +308,15 @@ def reprocess_conversation(
 
     block_count = 0
     char_count = 0
+    now = datetime.now(timezone.utc).isoformat()
     for msg, msg_row, msg_hash, block_hashes in zip(
         cir["messages"], messages, hashes["message_hashes"], hashes["per_message_block_hashes"]
     ):
         blocks = conn.execute(
-            "SELECT id, idx FROM blocks WHERE msg_id = ? ORDER BY idx", (msg_row["id"],)
+            "SELECT id, idx, attachment_id FROM blocks WHERE msg_id = ? ORDER BY idx", (msg_row["id"],)
         ).fetchall()
-        if [row["idx"] for row in blocks] != [block["idx"] for block in msg["blocks"]]:
-            raise ValueError(f"reprocess changed block structure for conversation {existing['uid']}")
+        if len(msg["blocks"]) < len(blocks):
+            raise ValueError(f"reprocess removed blocks from conversation {existing['uid']}")
 
         msg_chars = sum(len(block["text"]) for block in msg["blocks"])
         conn.execute(
@@ -345,6 +342,25 @@ def reprocess_conversation(
                 (
                     block["type"], block.get("tool_name"), block["text"],
                     len(block["text"]), block_hash, block_row["id"],
+                ),
+            )
+            block_count += 1
+
+        for block, block_hash in zip(msg["blocks"][len(blocks):], block_hashes[len(blocks):]):
+            attachment_id = None
+            att = block.get("attachment")
+            if att:
+                attachment_id = _get_or_create_attachment(conn, cir["platform"], att, now)
+                _link_attachment(conn, attachment_id, "message", msg_row["id"], att.get("role", "upload"), now)
+            conn.execute(
+                """
+                INSERT INTO blocks
+                    (msg_id, conv_id, idx, type, tool_name, text, char_count, content_hash, raw_json, attachment_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    msg_row["id"], conv_id, block["idx"], block["type"], block.get("tool_name"),
+                    block["text"], len(block["text"]), block_hash, _json(block.get("raw")), attachment_id,
                 ),
             )
             block_count += 1

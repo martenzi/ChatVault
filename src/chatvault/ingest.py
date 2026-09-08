@@ -283,9 +283,11 @@ def ingest_path(
         ).fetchone()["id"]
 
         result = FileIngestResult(file_path, "ok", adapter=mod.name)
-        original_count = conn.execute(
-            "SELECT COUNT(*) FROM conversations WHERE source_file_id = ?", (source_file_id,)
-        ).fetchone()[0]
+        original_rows = conn.execute(
+            "SELECT native_id FROM conversations WHERE source_file_id = ? ORDER BY id", (source_file_id,)
+        ).fetchall()
+        original_count = len(original_rows)
+        original_native_ids = {row["native_id"] for row in original_rows if row["native_id"] is not None}
         for position, cir in enumerate(convs):
             load_result = (
                 loader.reprocess_conversation(conn, cir, source_file_id, position)
@@ -305,9 +307,12 @@ def ingest_path(
                 touched_conv_ids.append(load_result.conv_id)
             elif load_result.action == "flagged_duplicate":
                 result.flagged += 1
-        if reprocess and existing is not None and len(convs) != original_count:
+        parsed_native_ids = {cir.get("native_id") for cir in convs if cir.get("native_id") is not None}
+        missing_native_ids = original_native_ids - parsed_native_ids
+        if reprocess and existing is not None and (len(convs) < original_count or missing_native_ids):
             raise ValueError(
-                f"reprocess produced {len(convs)} conversations for source file {source_file_id}; expected {original_count}"
+                f"reprocess dropped existing conversations from source file {source_file_id}: "
+                f"count {original_count} -> {len(convs)}, missing native ids {sorted(missing_native_ids)}"
             )
         conn.commit()
         summary.files.append(result)

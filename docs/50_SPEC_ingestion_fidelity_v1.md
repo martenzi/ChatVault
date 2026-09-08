@@ -444,8 +444,11 @@ data-touching pass):
 
 1. `chatvault backup` production before anything.
 2. Dry-run `--reprocess` against a **full scratch copy** of the real DB, per platform.
-3. Compare: conversation / message / block counts must be unchanged; `unknown`-block count must
-   drop; **no block's `raw_json` may change**; `chatvault verify` clean; `PRAGMA integrity_check` ok.
+3. Compare: conversation and message identities must be preserved; count changes are permitted only
+   when the improved adapter exposes additional real conversations or splits an opaque block into
+   multiple accurately typed blocks. Report and explain every count delta. The `unknown`-block count
+   must drop; **no existing block's `raw_json` may change**; `chatvault verify` clean;
+   `PRAGMA integrity_check` ok.
 4. Only then run against production, and confirm it matches the scratch run.
 5. Re-embed anything whose `text` materially changed (`chatvault embed --force` scoped to the
    affected platform) — embeddings are derived from `text`, so improving extraction invalidates them.
@@ -484,7 +487,7 @@ numbers — per Decision D14, verified against data, never against a summary.
 | 7.7 | **Raw fidelity preserved** | `SELECT COUNT(*) FROM blocks WHERE raw_json IS NULL OR raw_json = ''` is 0 before and after. Hash the full `raw_json` column before and after reprocess; assert identical. |
 | 7.8 | **Invalid UTF-8 is reported, never dropped** | A fixture with an invalid byte produces a non-zero replacement count in the ingest report. `grep -rn 'errors="ignore"' src/` returns nothing in the ingest path. |
 | 7.9 | **Injected context is retained, not dropped** | A real Windsurf conversation containing `<SYSTEM-RETRIEVED-MEMORY[` classifies as `injected_context`, is absent from `read`, and is present in `full`. |
-| 7.10 | **Vault integrity** | `chatvault verify` clean, `PRAGMA integrity_check` = `ok`, conversation/message/block counts unchanged, full test suite green before and after each phase. |
+| 7.10 | **Vault integrity** | `chatvault verify` clean, `PRAGMA integrity_check` = `ok`, conversation/message identities preserved, every legitimate count delta explained, full test suite green before and after each phase. |
 
 ---
 

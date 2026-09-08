@@ -81,6 +81,31 @@ def test_reprocess_updates_content_in_place_and_preserves_identity_and_raw_json(
     assert after["raw_json"] == before["raw_json"]
 
 
+def test_reprocess_expands_one_opaque_block_into_typed_blocks(conn):
+    original = _cir("x1", "original", "2026-01-01T00:00:00", "")
+    original["messages"][0]["blocks"][0]["type"] = "unknown"
+    loaded = _load(conn, original)
+    old_block = conn.execute("SELECT id, raw_json FROM blocks WHERE conv_id = ?", (loaded.conv_id,)).fetchone()
+
+    improved = _cir("x1", "improved", "2026-01-01T00:00:00", "reasoning")
+    improved["messages"][0]["blocks"][0]["type"] = "thinking"
+    improved["messages"][0]["blocks"].append(make_block(1, "text", "answer", raw={"source": "same record"}))
+    result = loader.reprocess_conversation(conn, improved, source_file_id=None, position=0)
+    conn.commit()
+
+    rows = conn.execute(
+        "SELECT id, idx, type, text, raw_json FROM blocks WHERE conv_id = ? ORDER BY idx",
+        (loaded.conv_id,),
+    ).fetchall()
+    assert result.action == "reprocessed"
+    assert [(row["idx"], row["type"], row["text"]) for row in rows] == [
+        (0, "thinking", "reasoning"), (1, "text", "answer")
+    ]
+    assert rows[0]["id"] == old_block["id"]
+    assert rows[0]["raw_json"] == old_block["raw_json"]
+    assert rows[1]["raw_json"] == '{"source":"same record"}'
+
+
 def test_reprocess_rejects_structural_changes_without_modifying_rows(conn):
     loaded = _load(conn, _cir("x1", "original", "2026-01-01T00:00:00", "hello"))
     changed = _cir("x1", "changed", "2026-01-01T00:00:00", "hello")
