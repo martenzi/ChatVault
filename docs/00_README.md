@@ -1,20 +1,35 @@
 # ChatVault Documentation
 
-**Updated:** 2026-08-12
+**Updated:** 2026-09-09
+
+> **Public portfolio subset.** This `docs/` tree is the design-rationale core of
+> ChatVault — the specs, concepts, and decisions that show *why* the system is built
+> the way it is. Some companion documents that lived in the private workspace have
+> been trimmed from this public release: the `STATUS.md` build log, the ingestion
+> ledger, personal notes/audits, user-facing guides, and the separate `history-r`
+> recovery workspace. Where a spec references one of those inline (e.g. "see the
+> STATUS.md build log"), it points at an internal document not included here. The
+> specs, concepts, and decisions below are self-contained enough to stand alone.
 
 ---
 
 ## Read in this order
 
-| # | Document | What it answers | Read when |
-|---|---|---|---|
-| **01** | `01_STATE_OF_PLAY.md` | What exists, what's broken, what's next | **Always first** |
-| **02** | `02_DECISIONS.md` | Why it's built this way | Before proposing changes |
-| **03** | `03_INDEX_themes_and_domains.md` | Structural map — what lives where | When orienting or hunting |
-| **04** | `04_HISTORY_how_we_got_here_2026-08-09.md` | The narrative, with timeline | For context, not for decisions |
-| **05** | `05_INGESTION_LEDGER.md` | **What's ingested, from where, when — and what's missing** | Before any ingest, or when asking "do we have X?" |
+| # | Document | What it answers |
+|---|---|---|
+| **02** | `02_DECISIONS.md` | Why it's built this way — 14 decisions with their rejected alternatives |
+| **10** | `10_CONCEPTS_label_tag_project.md` | Project label vs tag vs `project_id` — read before tagging |
+| **11** | `11_CONCEPTS_neo4j_and_interfaces.md` | Which interface when; what Neo4j is actually for |
+| **40** | `40_SPEC_second_brain_v0.md` | Stash / brief / extract — the first Brain spec |
+| **41** | `41_SPEC_markdown_reconciliation.md` | `md-scan`: find which scattered `.md` files are already in the vault |
+| **42** | `42_SPEC_brain_db.md` | Brain DB schema + `promote`/`add`/`list`/`show`/`search` |
+| **43** | `43_SPEC_cv_content_and_brain.md` | ChatVault content vs Brain content — the boundary |
+| **44** | `44_BRAIN_options_and_neo4j.md` | Brain options analysis and Neo4j's role |
+| **45** | `45_SPEC_brain_v2_full.md` | Brain v2 — the full personal knowledge base spec |
+| **50** | `50_SPEC_ingestion_fidelity_v1.md` | Porting the vetted JSON→Markdown identifier map into ChatVault |
+| **51** | `51_SPEC_brain_parity_and_naming.md` | Brain parity and command-naming vocabulary |
 
-**Starting a new AI thread?** *"Read `docs/01_STATE_OF_PLAY.md` and `docs/02_DECISIONS.md`, then [your question]."* That's the whole handoff.
+**Starting a new AI thread?** *"Read `docs/02_DECISIONS.md`, then [your question]."*
 
 ---
 
@@ -22,86 +37,50 @@
 
 ```
 docs/
-├── 00–05   Orientation      ← start here, numbered = reading order
-├── 10–11   Concepts         ← reference; how to think about a thing
-├── 20–22   Open fixes        ← work not yet done
-├── 40–42   Next-phase specs  ← Second Brain, markdown reconciliation, Brain DB
-├── 30      Dated notes      ← Q&A snapshots, freshness matters
-├── specs/                   ← historical build specs (all delivered)
-├── archive/                 ← superseded, do not act on
-├── User Guided Docs/        ← YOUR guides, written for you not for AI
-└── datasette_plugins/       ← plugin notes
+├── 00_README.md            ← this file
+├── 02_DECISIONS.md         ← design decisions and rejected alternatives
+├── 10–11   Concepts        ← reference; how to think about a thing
+├── 40–51   Specs           ← next-phase and delivered build specs
+├── specs/                  ← historical build specs (the original architecture)
+└── datasette_plugins/      ← notes on the Datasette plugins in use
 ```
 
-**Numbering means reading order, not importance.** Dates in filenames mean the content is a snapshot — check freshness before trusting it.
+**Numbering means reading order, not importance.** Dates in filenames mean the
+content is a snapshot — check freshness before trusting it.
 
 ---
 
-## Current documents
+## Concepts
 
-### Orientation
-- `01_STATE_OF_PLAY.md` — status, open work, daily setup
-- `02_DECISIONS.md` — 14 decisions with their rejected alternatives
-- `03_INDEX_themes_and_domains.md` — by workspace, by editor, by subsystem; solved vs open
-- `04_HISTORY_how_we_got_here_2026-08-09.md` — timeline from recovery to working system
-- `05_INGESTION_LEDGER.md` — **the ingestion journal.** Sources, dates, counts, gaps. Regenerate rather than edit.
+- `10_CONCEPTS_label_tag_project.md` — project label vs tag vs `project_id`.
+- `11_CONCEPTS_neo4j_and_interfaces.md` — which interface when; what Neo4j is actually for.
 
-### Concepts
-- `10_CONCEPTS_label_tag_project.md` — project label vs tag vs `project_id`. **Read before tagging.**
-- `11_CONCEPTS_neo4j_and_interfaces.md` — which interface when; what Neo4j is actually for
+## Specs (next-phase and delivered)
 
-### Open fixes
-- `41_SPEC_markdown_reconciliation.md` *(2026-08-14)* — `md-scan`: find which scattered `.md` files are already in the vault. ~4–5h, Sonnet mid.
-
-Previously open, now done. The four that lived here (`20_FIX_project_identity.md`, `21_FIX_scope_consistency.md`, `22_FIX_tag_browsing_ux.md`, `20_FIX_naming_project_kinds.md`) are done — moved to `archive/` with resolution notes. `20_FIX_naming_project_kinds.md` (2026-08-12) renamed `projects.kind` vocabulary (`workspace`→`code_workspace`, `desktop`→`claude_project`, `scratch`→`no_project`), renamed the `claude_web` platform to `claude_desktop`, deleted the `not_found` tag, and added `v_model_coverage`. See `01_STATE_OF_PLAY.md` for what's still genuinely open (the `~/.claude/projects` ingestion question is real and unresolved, but it's a data-source gap, not a code fix, so it isn't a `FIX_*` doc).
-
-### Next-phase specs
-- `40_SPEC_second_brain_v0.md` — stash / brief / extract. **Parts A+B built 2026-08-16** (`chatvault stash`, `chatvault brief`); Parts C/C2/D/E remain a deliberate "use it for two weeks first" decision, not started.
+- `40_SPEC_second_brain_v0.md` — stash / brief / extract. Parts A+B built.
 - `41_SPEC_markdown_reconciliation.md` — `md-scan`, four verdicts, non-destructive.
-- `42_SPEC_brain_db.md` — **the architecture decision.** Two layers: stash in ChatVault, a separate `brain.sqlite`. Revises `40_SPEC` §0. **Layer 2 schema + `promote`/`add`/`list`/`show`/`search` built 2026-08-16** (`chatvault brain ...`); `--extract`/`relate`/`supersede`/`confidence` and the Datasette/MCP/launcher interfaces not started.
+- `42_SPEC_brain_db.md` — Brain DB schema + commands. *Superseded by v2 (45).*
+- `43_SPEC_cv_content_and_brain.md` — the ChatVault-content / Brain-content boundary.
+- `44_BRAIN_options_and_neo4j.md` — analysis, not a build target.
+- `45_SPEC_brain_v2_full.md` — the full Brain v2 spec; all 6 phases built.
+- `50_SPEC_ingestion_fidelity_v1.md` — ingestion fidelity against the vetted extraction tool.
+- `51_SPEC_brain_parity_and_naming.md` — Brain parity, command naming, vocabulary.
 
-### Notes
-- `30_NOTES_2026-08-10.md` — id vs uid, Datasette display, tagging workflow, venvs, missing platforms
+## Historical specs (`specs/`)
 
----
+The original architecture and the additive v1.1–v1.5 deliveries that built the
+core system. `v1.x` names are **additive deliveries, not versions** — nothing
+supersedes anything, except `v1.4_REVISED` which fully replaces the original v1.4.
 
-## User Guided Docs — a different audience
+- `CHATVAULT_ARCHITECTURE.md` — the original architecture.
+- `CHATVAULT_SPEC_ADDENDUM.md` / `…_v1.1.1_PATCH.md` — addenda.
+- `CHATVAULT_SPEC_v1.2_PRESENCE_AND_MEMORY.md` — presence tracking.
+- `CHATVAULT_SPEC_v1.3_BROWSE_AND_EXPORT.md` — browse and export.
+- `CHATVAULT_SPEC_v1.4_REVISED.md` — the revised taxonomy pass.
+- `CHATVAULT_SPEC_v1.5_TAXONOMY.md` — taxonomy.
+- `CHATVAULT_TAGGING_WORKFLOW.md` — the tagging workflow.
 
-Written **for you**, in plain language, cheat-sheet style. Useful to an AI but not the project's technical documentation.
+## Datasette plugins (`datasette_plugins/`)
 
-- `CHATVAULT_FIRST_SESSION.md` — a guided hour at the keyboard
-- `CHATVAULT_CHEATSHEET.md` — how to think about the workflow
-- `CHATVAULT_KEYWORD_SEARCH_GUIDE.md` · `CHATVAULT_SEMANTIC_SEARCH_GUIDE.md`
-- `CHATVAULT_TAGGING_GUIDE.md` · `CHATVAULT_EXPORT_GUIDE.md`
-- `CHATVAULT_DATASETTE_GUIDE.md` — views, columns, dates, plugins
-- `CHATVAULT_LAUNCHERS_AND_ENVIRONMENT.md`
-- `CHEATSHEET_ADDENDUM_effort_levels.md` — which AI model at what effort
-- `Username_Topical_Areas.md` — your taxonomy seed
-- `CHATVAULT_FIRST_RUN-not-updated.md` — ⚠ stale, contains placeholder numbers
-
----
-
-## What changed on 2026-08-12
-
-**Archived** *(superseded, kept for provenance)*
-- `ATTACHMENTS_STRATEGY.md` — attachments are built; questions settled
-- `CHATVAULT_BUILD_ORDER.md` — every step complete
-- `archive/CHATVAULT_INTERFACE_STRATEGY.md` — contained a since-corrected error claiming Datasette could serve as the tagging surface
-
-**Moved to `specs/`** — all eight build specs. Delivered; kept as the record.
-
-**Moved** — `01_STATE_OF_PLAY.md` from *User Guided Docs* to root. It's the primary orientation document for both you and any AI, not a user guide.
-
-**Renamed** — the old `SYNTHESIS_2026-08-09.md` is now `04_HISTORY_how_we_got_here_2026-08-09.md`, because "synthesis" didn't say what was inside it.
-
-**New** — `00_README.md`, `02_DECISIONS.md`.
-
-**Archived, later the same day** — `20_FIX_project_identity.md`, `21_FIX_scope_consistency.md`, `22_FIX_tag_browsing_ux.md`. All three were done (two of them well before today), but this doc set hadn't been updated to say so — an AI working from `docs/` alone had no way to know that without checking git history or the live code. Each archived file now carries a resolution banner explaining what actually landed and when. This inconsistency is why this pass happened; see `01_STATE_OF_PLAY.md` for the standing rule it prompted.
-
----
-
-## Elsewhere
-
-`~/ChatVault/STATUS.md` — Claude Code's build log. Technical, chronological, separate from these.
-
-`~/Desktop/history-r/_LEFTOFF.md` — the recovery workspace. **ChatVault holds the results; history-r holds the method.** Check there before concluding how any data came to exist.
+Notes on the Datasette plugins the browse surface relies on: copyable, json-html,
+pretty-json, render-markdown, and search-all.

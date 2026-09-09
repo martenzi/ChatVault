@@ -2,7 +2,7 @@
 
 **Written:** 2026-09-07 · Claude (Opus 5) · **Status: not started**
 **Audience:** a coding model executing this end to end. **This spec is written to be executed without asking further questions** — §8 pre-answers the design decisions a coding model would otherwise raise.
-**Companions:** `docs/50_SPEC_ingestion_fidelity_v1.md` (ingestion), `docs/45_SPEC_brain_v2_full.md` (Brain schema/commands as built), `docs/User Guided Docs/2nd Brain/BRAIN_FAQ.md` (plain-language rationale).
+**Companions:** `docs/50_SPEC_ingestion_fidelity_v1.md` (ingestion), `docs/45_SPEC_brain_v2_full.md` (Brain schema/commands as built), `BRAIN_FAQ` (internal, not in the public release — plain-language rationale).
 
 ---
 

@@ -3,7 +3,7 @@
 **Written:** 2026-08-12
 **Purpose:** stop settled questions being relitigated. One entry per contested decision: what was chosen, what was rejected, and the reason.
 
-**If you're starting a new AI thread about ChatVault, this is the second file to read** (after `01_STATE_OF_PLAY.md`).
+**If you're starting a new AI thread about ChatVault, this is the file to read first.**
 
 ---
 
@@ -157,7 +157,7 @@ See `10_CONCEPTS_label_tag_project.md`.
 
 **Chosen:** query the database before making a claim about the database.
 
-**Why:** this failure recurred three times — Windsurf declared unrecoverable after testing the wrong corpus; project linkage declared missing after reading one adapter; `v1.x` names implying supersession that never existed. Your own `_LEFTOFF.md` recorded the lesson in July and it still happened again in August.
+**Why:** this failure recurred three times — Windsurf declared unrecoverable after testing the wrong corpus; project linkage declared missing after reading one adapter; `v1.x` names implying supersession that never existed. An earlier project log recorded the lesson in July and it still happened again in August.
 
 **Every correct conclusion in the audit phase came from running a query. Every wrong one came from reading code and extrapolating.**
 
