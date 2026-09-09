@@ -14,11 +14,15 @@ _REGISTRY: dict[str, ModuleType] = {
 def register_late_adapters() -> None:
     """Import adapters that depend on modules defined later in the build."""
     from chatvault.adapters import (
+        antigravity,
         chatgpt,
         chatgpt_legacy_recovered,
+        cursor,
         cursor_legacy,
         cursor_legacy_copilot,
         deepseek,
+        devin_cli,
+        devin_desktop_acp,
         gemini_takeout,
         generic_jsonl,
         grok,
@@ -58,6 +62,28 @@ def register_late_adapters() -> None:
     # together — a Google Takeout "My Activity" export, verified empirically
     # to be the only adapter matching this shape.
     _REGISTRY.setdefault("gemini_takeout", gemini_takeout)
+    # devin_cli / devin_desktop_acp: both sniff on a unique top-level
+    # "schema" tag their own extraction script stamps
+    # ("devin_cli_session_v1" / "devin_desktop_acp_conversation_v1") on the
+    # first line only -- disjoint from each other and from every other
+    # adapter's sniff by construction, verified by
+    # tests/test_adapter_registry.py's sweep.
+    _REGISTRY.setdefault("devin_cli", devin_cli)
+    _REGISTRY.setdefault("devin_desktop_acp", devin_desktop_acp)
+    # cursor (current version, state.vscdb + conversation-search.db):
+    # sniffs on its own "cursor_conversation_v1" schema tag, same disjoint-
+    # by-construction pattern as the two devin adapters above. Distinct
+    # platform name from cursor_legacy/cursor_legacy_copilot (different
+    # export era entirely, see docs/reports/cursor_shapes_2026-09-09.md).
+    _REGISTRY.setdefault("cursor", cursor)
+    # antigravity (modern .db format, IDE + agy CLI): sniffs on its own
+    # "antigravity_conversation_v1" schema tag, same disjoint-by-construction
+    # pattern as the adapters above. See
+    # docs/reports/antigravity_shapes_2026-09-09.md -- no .proto schema ships
+    # with the app, so raw is protobuf bytes the extraction script never
+    # interprets; all decoding happens here at parse time via targeted
+    # (non-recursive) field-path reads.
+    _REGISTRY.setdefault("antigravity", antigravity)
     # Deliberately last: permissive fallback, must not shadow specific adapters.
     _REGISTRY.setdefault("generic_jsonl", generic_jsonl)
 
