@@ -1,5 +1,7 @@
 # ChatVault
 
+[![Tests](https://github.com/martenzi/ChatVault/actions/workflows/tests.yml/badge.svg)](https://github.com/martenzi/ChatVault/actions/workflows/tests.yml)
+
 A unified, vendor-independent vault for AI conversation history.
 
 ChatVault ingests chat transcripts from every major AI coding assistant and
