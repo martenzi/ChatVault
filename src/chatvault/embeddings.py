@@ -206,13 +206,23 @@ def status(conn: sqlite3.Connection) -> dict:
 
 
 def semantic_search(
-    conn: sqlite3.Connection, query: str, limit: int = 20, model: str = MODEL
-) -> list[sqlite3.Row]:
+    conn: sqlite3.Connection,
+    query: str,
+    limit: int = 20,
+    model: str = MODEL,
+    return_total: bool = False,
+) -> list[sqlite3.Row] | tuple[list[sqlite3.Row], int]:
     """Embeds `query` and returns the nearest conversations by vector
     distance (cosine, via sqlite-vec), ordered nearest-first. Over-fetches
     from the vec0 index before joining against v_conversations, since a
     conversation excluded/superseded after being embedded would otherwise
-    silently shrink the result count below `limit`."""
+    silently shrink the result count below `limit`.
+
+    With `return_total=True`, returns `(rows, total)` instead of just
+    `rows` — `total` is the count of valid (non-excluded) candidates found
+    within the over-fetch window, before the final `limit` slice, mirroring
+    `browse.find()`'s `(rows, total)` shape for the CLI's "showing N of M"
+    display."""
     vec = embed_text(query, model=model)
     fetch_k = max(limit * 3, 50)
     hits = conn.execute(
@@ -224,7 +234,7 @@ def semantic_search(
         (_pack(vec), fetch_k),
     ).fetchall()
     if not hits:
-        return []
+        return ([], 0) if return_total else []
 
     ordered_ids = [h["conv_id"] for h in hits]
     placeholders = ",".join("?" * len(ordered_ids))
@@ -232,4 +242,6 @@ def semantic_search(
         f"SELECT * FROM v_conversations WHERE id IN ({placeholders})", ordered_ids  # noqa: S608
     ).fetchall()
     by_id = {r["id"]: r for r in conv_rows}
-    return [by_id[cid] for cid in ordered_ids if cid in by_id][:limit]
+    valid_ids = [cid for cid in ordered_ids if cid in by_id]
+    rows = [by_id[cid] for cid in valid_ids][:limit]
+    return (rows, len(valid_ids)) if return_total else rows

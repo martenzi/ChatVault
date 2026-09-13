@@ -4,6 +4,8 @@ __pycache__/
 .env
 db/
 exports/
+archive/
+attachments/
 .chatvault/
 neo4j/
 raw/*

@@ -196,18 +196,20 @@ def parse_pick_spec(pick: str, all_rows: list[int]) -> list[int]:
 
 def resolve_pick(conn: sqlite3.Connection, config: Config, pick: str) -> list[int]:
     """Resolve a --pick spec (see `parse_pick_spec`: '2', '1,3', '1-5',
-    'all,!3', ...) against the cached last `find` result. Cache invalidation
-    is content-based (PRAGMA data_version + db mtime), never time-based — a
-    three-day-old result set is still valid if nothing was ingested since."""
+    'all,!3', ...) against the cached last `find`/`search` result — both
+    commands write the same cache, so `--pick` works after either one.
+    Cache invalidation is content-based (PRAGMA data_version + db mtime),
+    never time-based — a three-day-old result set is still valid if nothing
+    was ingested since."""
     path = cache_path(config)
     if not path.exists():
-        raise StaleCacheError("no cached `find` results — run `chatvault find` first")
+        raise StaleCacheError("no cached results — run `chatvault find` or `chatvault search` first")
 
     data = json.loads(path.read_text())
     current = _db_fingerprint(conn, config)
     if data.get("data_version") != current["data_version"] or data.get("mtime") != current["mtime"]:
         raise StaleCacheError(
-            "cached `find` results are stale (database changed since) — re-run `chatvault find`"
+            "cached results are stale (database changed since) — re-run `chatvault find`/`chatvault search`"
         )
 
     by_row = {r["row"]: r["conv_id"] for r in data["rows"]}
@@ -216,6 +218,6 @@ def resolve_pick(conn: sqlite3.Connection, config: Config, pick: str) -> list[in
     conv_ids = []
     for n in picked_rows:
         if n not in by_row:
-            raise ValueError(f"row {n} not in the last `find` results (1-{len(by_row)})")
+            raise ValueError(f"row {n} not in the last results (1-{len(by_row)})")
         conv_ids.append(by_row[n])
     return conv_ids

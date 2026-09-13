@@ -2,14 +2,11 @@
 
 **Updated:** 2026-09-09
 
-> **Public portfolio subset.** This `docs/` tree is the design-rationale core of
-> ChatVault — the specs, concepts, and decisions that show *why* the system is built
-> the way it is. Some companion documents that lived in the private workspace have
-> been trimmed from this public release: the `STATUS.md` build log, the ingestion
-> ledger, personal notes/audits, user-facing guides, and the separate `history-r`
-> recovery workspace. Where a spec references one of those inline (e.g. "see the
-> STATUS.md build log"), it points at an internal document not included here. The
-> specs, concepts, and decisions below are self-contained enough to stand alone.
+> **Subset of the working docs.** This `docs/` tree is the design-rationale core of
+> ChatVault — the specs, concepts, and decisions that explain *why* the system is
+> built the way it is. A few specs reference internal working documents inline
+> (e.g. a build log or ingestion ledger) that aren't part of this tree; the
+> documents below are self-contained enough to stand alone.
 
 ---
 

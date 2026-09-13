@@ -243,6 +243,23 @@ def test_semantic_search_with_no_embeddings_returns_empty(conn):
     assert hits == []
 
 
+def test_semantic_search_return_total(conn):
+    for i in range(5):
+        _load(conn, f"o{i}", f"npm conv {i}", f"2026-01-0{i+1}T00:00:00", text="npm topic")
+    embeddings.index_conversations(conn)
+
+    rows, total = embeddings.semantic_search(conn, "npm topic", limit=2, return_total=True)
+    assert len(rows) == 2
+    assert total == 5
+
+
+def test_semantic_search_return_total_with_no_embeddings(conn):
+    _load(conn, "p1", "conv", "2026-01-01T00:00:00", text="npm topic")
+    rows, total = embeddings.semantic_search(conn, "anything", limit=10, return_total=True)
+    assert rows == []
+    assert total == 0
+
+
 # ─────────────── ingest wiring ───────────────
 
 

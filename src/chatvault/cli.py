@@ -694,9 +694,11 @@ def audit_shapes(
         console.print(f"wrote {out}")
 
 
-def _render_find_table(title: str, rows: list, total: int) -> None:
+def _render_find_table(title: str, rows: list, total: int, *, mode: str | None = None, query: str | None = None) -> None:
     from rich.markup import escape
 
+    if mode is not None:
+        console.print(f"mode: {mode} · query: {query!r}" if query else f"mode: {mode}")
     table = Table(title=title)
     table.add_column("#", justify="right")
     table.add_column("date")
@@ -706,6 +708,10 @@ def _render_find_table(title: str, rows: list, total: int) -> None:
     table.add_column("msgs", justify="right")
     table.add_column("📎", justify="right")
     for i, r in enumerate(rows, start=1):
+        # semantic_search rows are plain v_conversations rows and don't carry
+        # the attachment_count subquery browse.find() adds — degrade to
+        # blank rather than KeyError.
+        attachment_count = r["attachment_count"] if "attachment_count" in r.keys() else None
         table.add_row(
             str(i),
             (r["started_at"] or "")[:10] or "-",
@@ -713,7 +719,7 @@ def _render_find_table(title: str, rows: list, total: int) -> None:
             escape(r["project"]) if r["project"] else "—",
             escape(r["title"]) if r["title"] else "Untitled",
             str(r["message_count"]),
-            str(r["attachment_count"]) if r["attachment_count"] else "",
+            str(attachment_count) if attachment_count else "",
         )
     console.print(table)
     console.print(f"showing {len(rows)} of {total} matches · saved as last query")
@@ -729,11 +735,13 @@ def find(
     tag: str = typer.Option(None, "--tag", help="Exact tag name, or a prefix ending in '/**' to match that tag and everything nested under it, e.g. 'tech/macos/**'."),
     has_attachments: bool = typer.Option(False, "--has-attachments"),
     untagged: bool = typer.Option(False, "--untagged", help="Only conversations with no tags at all."),
-    limit: int = typer.Option(20, "--limit"),
+    limit: int = typer.Option(50, "--limit"),
     sort: str = typer.Option("recent", "--sort", help="recent | oldest | longest"),
 ) -> None:
-    """Human-facing lister — find by title/date/platform, not uid. Numbers the
-    results and caches them so `export --pick`/`show --pick` can select by row. Prints a table."""
+    """Human-facing lister — find by title/date/platform, not uid. Keyword
+    search, conversation-level. For meaning-based search, use `chatvault
+    search` instead. Numbers the results and caches them so
+    `export --pick`/`show --pick` can select by row. Prints a table."""
     config = load_config()
     resolved_platform = platforms_mod.resolve_platform_alias(platform) if platform else None
     conn = connect(config)
@@ -755,7 +763,10 @@ def find(
     finally:
         conn.close()
 
-    _render_find_table(f"find: {query!r}" if query else "find: most recent", rows, total)
+    _render_find_table(
+        f"find: {query!r}" if query else "find: most recent", rows, total,
+        mode="keyword", query=query,
+    )
 
 
 def _interactive_pick(conn):
@@ -1454,47 +1465,34 @@ def dedupe(
 def search(
     query: str = typer.Argument(...),
     platform: str = typer.Option(None, "--platform", help="Exact platform name, or a short alias: gpt, claude (matches claude_desktop + claude_code), ds, gem, wind."),
-    type: str = typer.Option(None, "--type", help="text | thinking | tool_use | tool_result | code | ..."),
-    semantic: bool = typer.Option(False, "--semantic", help="Search conversations by meaning (embeddings), not keyword overlap. Ignores --type (block-level, meaningless for a per-conversation vector search)."),
-    limit: int = typer.Option(20, "--limit"),
+    limit: int = typer.Option(50, "--limit"),
 ) -> None:
-    """Keyword search over blocks (default) or semantic search over
-    conversations (--semantic) — finds conversations whose meaning matches
-    the query even if they share none of its actual words. Prints a table."""
+    """Semantic search over conversations — finds conversations whose meaning
+    matches the query even if they share none of its actual words. Always
+    embedding-based (no flag needed); for keyword/title matching use
+    `chatvault find` instead. Numbers the results and caches them so
+    `export --pick`/`show --pick` can select by row, same as `find`. Prints
+    a table."""
     config = load_config()
     conn = connect(config)
     try:
-        if semantic:
-            try:
-                rows = embeddings_mod.semantic_search(conn, query, limit=limit)
-            except embeddings_mod.EmbeddingUnavailable as exc:
-                console.print(f"[red]{exc}[/red]")
-                raise typer.Exit(code=1)
-        else:
-            resolved_platform = platforms_mod.resolve_platform_alias(platform) if platform else None
-            rows = search_mod.search(conn, query, platform=resolved_platform, type_=type, limit=limit)
+        try:
+            rows, total = embeddings_mod.semantic_search(conn, query, limit=limit, return_total=True)
+        except embeddings_mod.EmbeddingUnavailable as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+        if platform:
+            names = set(platforms_mod.resolve_platform_alias(platform))
+            rows = [r for r in rows if r["platform"] in names]
+            total = len(rows)
+        browse_mod.save_result_cache(
+            conn, config, rows,
+            {"query": query, "platform": platform, "limit": limit, "mode": "semantic"},
+        )
     finally:
         conn.close()
 
-    if semantic:
-        table = Table(title=f"semantic search: {query!r}")
-        table.add_column("date")
-        table.add_column("platform")
-        table.add_column("title")
-        for r in rows:
-            table.add_row((r["started_at"] or "")[:10] or "-", r["platform"], r["title"] or "Untitled")
-        console.print(table)
-        console.print(f"{len(rows)} result(s)")
-        return
-
-    table = Table(title=f"search: {query!r}")
-    table.add_column("uid")
-    table.add_column("type")
-    table.add_column("snippet")
-    for r in rows:
-        snippet = r["text"][:100].replace("\n", " ")
-        table.add_row(r["uid"], r["type"], snippet)
-    console.print(table)
+    _render_find_table(f"search: {query!r}", rows, total, mode="semantic", query=query)
 
 
 @app.command(rich_help_panel="Search & Browse")
