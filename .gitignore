@@ -17,3 +17,26 @@ raw_backups/
 *.egg-info/
 .claude/settings.local.json
 .DS_Store
+
+# Personal docs — these live only in the private repo (~/ChatVault).
+# Safety net against accidental copies; the manifest in the private repo
+# (docs/58_GITHUB_public_docs_manifest.md) governs what may be ported.
+docs/User Guided Docs/
+docs/archive/
+docs/audit-shapes/
+docs/reports/
+docs/01_STATE_OF_PLAY.md
+docs/03_INDEX_*
+docs/04_HISTORY_*
+docs/05_INGESTION_LEDGER.md
+docs/21_FIX_*
+docs/30_NOTES_*
+docs/4[6-9]_*
+docs/5[2-9]_*
+docs/GEMINI_*
+docs/GROK_*
+STATUS.md
+MANIFEST.md
+NEXT_Recommended_Steps.md
+README_GITHUB_DRAFT.md
+AGENTS.md
