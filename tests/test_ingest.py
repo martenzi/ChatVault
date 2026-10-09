@@ -97,7 +97,7 @@ def test_windsurf_legacy_adapter_maps_full_schema_correctly(conn):
     assert conv["platform"] == "windsurf"
     assert conv["native_id"] == "aaaa1111-2222-3333-4444-555566667777"
     assert conv["title"] == "Fix the flaky ingest test"
-    assert conv["project"] == "project-x"
+    assert conv["project"] == "example-project"
     assert conv["message_count"] == 10
     # per-message model IS present in the *_full schema (unlike the thin export)
     assert conv["model_primary"] == "swe-1-6"
@@ -279,7 +279,7 @@ def test_cursor_legacy_adapter_bundles_text_and_tool_blocks(conn):
     assert conv["platform"] == "cursor"
     assert conv["native_id"] == "c0mp0ser-1111-2222-3333-444455556666"
     assert conv["title"] == "Fix docker compose networking"
-    assert conv["project"] == "project-x"
+    assert conv["project"] == "example-project"
     assert conv["message_count"] == 3
     assert conv["model_primary"] == "claude-sonnet-4-6"
 

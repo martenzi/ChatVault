@@ -513,7 +513,7 @@ correct any reading of it before adapters are touched.
 ## 9. Update these docs when done
 
 - `STATUS.md` — a build-log row per phase, and close the two Open items added 2026-09-07.
-- `docs/49_AUDIT_ingestion_fidelity_vs_json_tool_2026-09-07.md` — dated resolution banner with the real after-numbers.
+- `49_AUDIT_ingestion_fidelity_vs_json_tool_2026-09-07.md` (internal, not in the public release) — dated resolution banner with the real after-numbers.
 - `docs/02_DECISIONS.md` — a new decision recording that the standalone converter's identifier map
   is the canonical source for provider-shape knowledge, with rejected alternatives (shell out to the
   tool; keep per-adapter private guessing).

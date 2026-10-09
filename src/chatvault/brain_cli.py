@@ -137,8 +137,9 @@ def _edit_text(initial: str = "") -> str:
     returns what comes back. Deliberately stdlib-only (tempfile + subprocess)
     rather than click.edit()/click.echo_via_pager() — this codebase's typer
     (0.27.1) vendors click internally as typer._click, so the top-level
-    `click` package this repo's other pager code paths still `import click`
-    for isn't actually installed."""
+    `click` package isn't actually installed. The repo's pager code paths
+    (`cli.py::_page`, `_page` below) use stdlib pydoc.pager for the same
+    reason — see 02_DECISIONS.md D15."""
     editor = os.environ.get("EDITOR", "vi")
     with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as fh:
         fh.write(initial)

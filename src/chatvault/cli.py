@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import pydoc
 import sys
 from datetime import date
 from pathlib import Path
@@ -22,6 +23,7 @@ from chatvault import embeddings as embeddings_mod
 from chatvault import doctor as doctor_mod
 from chatvault import export as export_mod
 from chatvault import graph as graph_mod
+from chatvault import display as display_mod
 from chatvault import ingest as ingest_mod
 from chatvault import inventory as inventory_mod
 from chatvault import ledger as ledger_mod
@@ -59,6 +61,16 @@ app.add_typer(projects_app, name="projects", rich_help_panel="Projects")
 app.add_typer(stash_app, name="stash", rich_help_panel="Second Brain v0 (stash)")
 app.add_typer(brain_app, name="brain", rich_help_panel="Second Brain v2 (Brain)")
 console = Console()
+
+
+def _page(text: str) -> None:
+    """Page text through the system pager on a TTY, else print. Stdlib-only
+    (pydoc.pager) — typer 0.27 vendors click internally, so the top-level
+    `click` package isn't installed."""
+    if sys.stdout.isatty():
+        pydoc.pager(text)
+    else:
+        console.print(text)
 
 
 def _human_bytes(n: int) -> str:
@@ -313,12 +325,7 @@ def stash_show(n: int = typer.Argument(..., help="Row number from `stash list` (
         + "-" * 40
     )
     full = f"{header}\n\n{content}"
-    if not sys.stdout.isatty():
-        console.print(full)
-    else:
-        import click
-
-        click.echo_via_pager(full)
+    _page(full)
 
 
 @stash_app.command("drop")
@@ -454,8 +461,11 @@ def ingest(
     force: bool = typer.Option(False, "--force", help="Allow ingesting raw_exclusions/ directly."),
     reprocess: bool = typer.Option(False, "--reprocess", help="Bypass the file-level dedup and re-parse already-seen files. Existing conversations still resolve as noop by content_hash — this is for backfilling metadata an adapter fix now extracts (e.g. attachments) without ever duplicating rows."),
     embed: bool = typer.Option(True, "--embed/--no-embed", help="Embed newly inserted/superseded conversations for semantic search (spec: 'incrementally on new ingests'). Best-effort — an unreachable Ollama server is reported, not fatal."),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Include skipped_dup rows in the terminal table (full list always goes to the ingest log)."),
 ) -> None:
-    """Ingest RAW export file(s) into SQLite. Idempotent — safe to re-run. Prints a table plus totals."""
+    """Ingest RAW export file(s) into SQLite. Idempotent — safe to re-run.
+    Prints a status summary plus a short detail table (skips collapsing
+    skipped_dup unless --verbose); full per-file report goes to logs/."""
     config = load_config()
     path = path or config.raw_dir
     if not path.exists():
@@ -472,49 +482,7 @@ def ingest(
     finally:
         conn.close()
 
-    table = Table(title=f"ingest{' (dry-run)' if dry_run else ''}: {path}")
-    table.add_column("file")
-    table.add_column("adapter")
-    table.add_column("status")
-    table.add_column("inserted", justify="right")
-    table.add_column("noop", justify="right")
-    table.add_column("superseded", justify="right")
-    table.add_column("reprocessed", justify="right")
-    table.add_column("flagged", justify="right")
-
-    for f in summary.files:
-        table.add_row(
-            str(f.path),
-            f.adapter or "-",
-            f.status if not f.error else f"[red]{f.status}[/red]",
-            str(f.inserted),
-            str(f.noop),
-            str(f.superseded),
-            str(f.reprocessed),
-            str(f.flagged),
-        )
-    console.print(table)
-
-    for f in summary.files:
-        if f.error:
-            console.print(f"[red]{f.path}: {f.error}[/red]")
-
-    totals = summary.totals
-    reprocessed = sum(f.reprocessed for f in summary.files)
-    console.print(
-        f"totals: inserted={totals['inserted']} noop={totals['noop']} "
-        f"superseded={totals['superseded']} reprocessed={reprocessed} flagged={totals['flagged']}"
-    )
-    if totals["flagged"]:
-        console.print("[yellow]Some conversations were flagged as ambiguous duplicates — see `chatvault dedupe --report`.[/yellow]")
-    if summary.embedding is not None:
-        e = summary.embedding
-        console.print(f"embedding: embedded={e.embedded} skipped={e.skipped} failed={e.failed}")
-        if e.unavailable:
-            console.print(
-                "[yellow]Ollama wasn't reachable — semantic search is stale for these conversations "
-                "until you run `chatvault embed` (or `ollama serve`) later.[/yellow]"
-            )
+    _render_ingest_report(summary, path, dry_run=dry_run, verbose=verbose, logs_dir=config.logs_dir)
 
 
 @app.command(rich_help_panel="Getting Data In")
@@ -694,30 +662,109 @@ def audit_shapes(
         console.print(f"wrote {out}")
 
 
+def _render_ingest_report(summary, path: Path, *, dry_run: bool, verbose: bool, logs_dir: Path) -> None:
+    """Glance summary + capped detail table; full list always in the log."""
+    from rich.markup import escape
+
+    counts = display_mod.status_counts(summary.files)
+    totals = summary.totals
+    reprocessed = sum(f.reprocessed for f in summary.files)
+    path_root = path if path.is_dir() else path.parent
+
+    count_bits = " · ".join(f"{status}={n}" for status, n in sorted(counts.items()))
+    console.print(
+        f"ingest{' (dry-run)' if dry_run else ''}: {path} · "
+        f"{len(summary.files)} file(s)" + (f" · {count_bits}" if count_bits else "")
+    )
+    console.print(
+        f"totals: inserted={totals['inserted']} noop={totals['noop']} "
+        f"superseded={totals['superseded']} reprocessed={reprocessed} flagged={totals['flagged']}"
+    )
+
+    detail, omitted = display_mod.select_ingest_detail_rows(summary.files, verbose=verbose)
+    dup_n = counts.get("skipped_dup", 0)
+    if detail:
+        table = Table(title=None, expand=False)
+        table.add_column("adapter", overflow="ellipsis", no_wrap=True, max_width=24)
+        table.add_column("status", no_wrap=True)
+        table.add_column("inserted", justify="right")
+        table.add_column("noop", justify="right")
+        table.add_column("superseded", justify="right")
+        table.add_column("reprocessed", justify="right")
+        table.add_column("flagged", justify="right")
+        table.add_column("file", overflow="ellipsis", no_wrap=True)
+        for f in detail:
+            table.add_row(
+                f.adapter or "-",
+                f.status if not f.error else f"[red]{f.status}[/red]",
+                str(f.inserted),
+                str(f.noop),
+                str(f.superseded),
+                str(f.reprocessed),
+                str(f.flagged),
+                escape(display_mod.relative_display_path(f.path, path_root)),
+            )
+        console.print(table)
+
+    notes: list[str] = []
+    if dup_n and not verbose:
+        notes.append(f"{dup_n} skipped_dup collapsed (use -v to list)")
+    if omitted:
+        notes.append(f"{omitted} more detail row(s) omitted")
+    if notes:
+        console.print("[dim]" + " · ".join(notes) + "[/dim]")
+
+    log_path = display_mod.write_ingest_log(
+        summary,
+        display_mod.ingest_log_path(logs_dir),
+        ingest_path=path,
+        dry_run=dry_run,
+        root=path_root,
+    )
+    console.print(f"log: {log_path}")
+
+    for f in summary.files:
+        if f.error:
+            console.print(f"[red]{display_mod.relative_display_path(f.path, path_root)}: {f.error}[/red]")
+
+    if totals["flagged"]:
+        console.print("[yellow]Some conversations were flagged as ambiguous duplicates — see `chatvault dedupe --report`.[/yellow]")
+    if summary.embedding is not None:
+        e = summary.embedding
+        console.print(f"embedding: embedded={e.embedded} skipped={e.skipped} failed={e.failed}")
+        if e.unavailable:
+            console.print(
+                "[yellow]Ollama wasn't reachable — semantic search is stale for these conversations "
+                "until you run `chatvault embed` (or `ollama serve`) later.[/yellow]"
+            )
+
+
 def _render_find_table(title: str, rows: list, total: int, *, mode: str | None = None, query: str | None = None) -> None:
     from rich.markup import escape
 
     if mode is not None:
         console.print(f"mode: {mode} · query: {query!r}" if query else f"mode: {mode}")
-    table = Table(title=title)
-    table.add_column("#", justify="right")
-    table.add_column("date")
-    table.add_column("platform")
-    table.add_column("project")
-    table.add_column("title")
-    table.add_column("msgs", justify="right")
-    table.add_column("📎", justify="right")
+    table = Table(title=title, expand=False)
+    table.add_column("#", justify="right", no_wrap=True)
+    table.add_column("date", no_wrap=True)
+    table.add_column("platform", no_wrap=True)
+    table.add_column("project", overflow="ellipsis", no_wrap=True, max_width=display_mod.PROJECT_MAX)
+    table.add_column("title", overflow="ellipsis", no_wrap=True, max_width=display_mod.TITLE_MAX)
+    table.add_column("msgs", justify="right", no_wrap=True)
+    table.add_column("📎", justify="right", no_wrap=True)
     for i, r in enumerate(rows, start=1):
         # semantic_search rows are plain v_conversations rows and don't carry
         # the attachment_count subquery browse.find() adds — degrade to
         # blank rather than KeyError.
         attachment_count = r["attachment_count"] if "attachment_count" in r.keys() else None
+        project = display_mod.truncate_display(r["project"], display_mod.PROJECT_MAX) if r["project"] else "—"
+        title_cell = display_mod.truncate_display(r["title"], display_mod.TITLE_MAX) if r["title"] else "Untitled"
         table.add_row(
             str(i),
             (r["started_at"] or "")[:10] or "-",
             r["platform"],
-            escape(r["project"]) if r["project"] else "—",
-            escape(r["title"]) if r["title"] else "Untitled",
+            escape(project),
+            escape(title_cell),
             str(r["message_count"]),
             str(attachment_count) if attachment_count else "",
         )
@@ -1578,12 +1625,10 @@ def show(
     finally:
         conn.close()
 
-    if raw or not sys.stdout.isatty():
+    if raw:
         console.print(content)
     else:
-        import click
-
-        click.echo_via_pager(content)
+        _page(content)
 
 
 @graph_app.command("rebuild")

@@ -250,11 +250,11 @@ def test_untagged_only_filter_updates_results(conn):
 
 def test_titles_with_literal_brackets_do_not_crash_the_results_list(conn):
     """Regression test: found against real production data, not a fixture.
-    A real conversation titled '@[/Users/.../SomeProject-Standalone/...]' crashed
+    A real conversation titled '@[/Users/.../sample-Standalone/...]' crashed
     the app immediately on mount — Rich markup parsing treats '[...]' as a
     style tag, and unmatched/unknown brackets raise MarkupError. Result
     labels must never be markup-parsed."""
-    _load(conn, "h1", "@[/home/user/Notes/SomeProject-Standalone/notes.md] some text", "2026-01-01T00:00:00")
+    _load(conn, "h1", "@[/Users/username/vault_main/sample-Standalone/notes.md] some text", "2026-01-01T00:00:00")
     _load(conn, "h2", "[not a style][/not a closing tag either]", "2026-01-02T00:00:00")
 
     async def body():

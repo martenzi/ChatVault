@@ -30,7 +30,11 @@ def _kind_for_platform(platform: str) -> str:
 # above would silently drop real session content. Recognise them by glob-ish
 # pattern on the filename instead of requiring the source folder to rename
 # anything (which raw/ append-only + "never modify source" both rule out).
-_KNOWN_NAME_RE = re.compile(r"\.(json|jsonl)(\.|$)", re.IGNORECASE)
+# .html/.txt added 2026-09-21: Google Takeout switched "My Activity" exports
+# to HTML, and "Gemini in Workspace/Conversation History" exports JSON inside
+# .txt files. Files matching no adapter land as skipped_no_adapter rows only —
+# nothing is written, so widening this list is audit-positive, not risky.
+_KNOWN_NAME_RE = re.compile(r"\.(json|jsonl|html?|txt)(\.|$)", re.IGNORECASE)
 
 
 def _is_known_candidate_name(name: str) -> bool:

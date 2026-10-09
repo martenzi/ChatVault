@@ -1,2 +1,2 @@
-{"sessionId":"s1","uuid":"su1","parentUuid":null,"type":"user","cwd":"/home/user/proj","version":"1.0.0","timestamp":"2026-01-01T11:00:00Z","message":{"role":"user","content":"Investigate the auth module."}}
+{"sessionId":"s1","uuid":"su1","parentUuid":null,"type":"user","cwd":"/Users/username/proj","version":"1.0.0","timestamp":"2026-01-01T11:00:00Z","message":{"role":"user","content":"Investigate the auth module."}}
 {"sessionId":"s1","uuid":"su2","parentUuid":"su1","type":"assistant","timestamp":"2026-01-01T11:00:05Z","message":{"role":"assistant","model":"claude-sonnet-5","content":[{"type":"text","text":"The auth module uses JWT tokens."}]}}

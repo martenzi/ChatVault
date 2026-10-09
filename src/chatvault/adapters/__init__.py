@@ -24,6 +24,7 @@ def register_late_adapters() -> None:
         devin_cli,
         devin_desktop_acp,
         gemini_takeout,
+        gemini_workspace,
         generic_jsonl,
         grok,
         hermes,
@@ -62,6 +63,9 @@ def register_late_adapters() -> None:
     # together — a Google Takeout "My Activity" export, verified empirically
     # to be the only adapter matching this shape.
     _REGISTRY.setdefault("gemini_takeout", gemini_takeout)
+    # gemini_workspace: "conversation_turns" + "user_turn"/"system_turn" in a
+    # .txt file — Takeout's "Gemini in Workspace/Conversation History" export.
+    _REGISTRY.setdefault("gemini_workspace", gemini_workspace)
     # devin_cli / devin_desktop_acp: both sniff on a unique top-level
     # "schema" tag their own extraction script stamps
     # ("devin_cli_session_v1" / "devin_desktop_acp_conversation_v1") on the

@@ -30,7 +30,7 @@ def _result_label(row: sqlite3.Row) -> Text:
     the widget — real conversation titles routinely contain literal '[' ']'
     (paths, citations, bracketed notes), which Textual/Rich would otherwise
     parse as markup tags and crash on (found against real production data,
-    not a fixture: a title starting '[/Users/.../SomeProject-S...' broke the
+    not a fixture: a title starting '[/Users/.../sample-S...' broke the
     unescaped version of this immediately)."""
     date = (row["started_at"] or "")[:10] or "?"
     title = (row["title"] or "Untitled")[:56]

@@ -154,7 +154,7 @@ def test_titles_with_literal_brackets_do_not_crash_the_results_list(bconn):
     titles can contain literal '[' ']' (paths, citations), which Rich
     markup parsing would otherwise choke on if a label were built as a raw
     f-string instead of a plain (non-markup) Text object."""
-    _add(bconn, "@[/home/user/notes.md] some text")
+    _add(bconn, "@[/Users/username/notes.md] some text")
     _add(bconn, "[not a style][/not a closing tag either]")
 
     async def body():

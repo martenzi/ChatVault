@@ -92,11 +92,11 @@ def test_retire_marks_row_and_future_reconciles_skip_it(vault, conn):
     staged, root_dir = _stage_live_source(vault, conn)
     staged.unlink()
 
-    n = reconcile.retire(conn, root_dir, "moved to /mnt/archive")
+    n = reconcile.retire(conn, root_dir, "moved to /Volumes/Archive")
     assert n == 1
     row = conn.execute("SELECT presence, presence_note FROM source_files LIMIT 1").fetchone()
     assert row["presence"] == "retired"
-    assert row["presence_note"] == "moved to /mnt/archive"
+    assert row["presence_note"] == "moved to /Volumes/Archive"
 
     report = reconcile.reconcile(conn, kind="live")
     assert report.checked == 0  # retired rows are never reported as missing

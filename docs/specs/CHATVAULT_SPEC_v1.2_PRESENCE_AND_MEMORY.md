@@ -50,7 +50,7 @@ CREATE TABLE reconcile_runs (
 
 ```
 chatvault reconcile [--root PATH ...] [--kind live|frozen|all] [--dry-run] [--json]
-chatvault reconcile --retire <root-or-path> --reason "moved to /mnt/archive"
+chatvault reconcile --retire <root-or-path> --reason "moved to /Volumes/Archive"
 chatvault reconcile --status
 ```
 

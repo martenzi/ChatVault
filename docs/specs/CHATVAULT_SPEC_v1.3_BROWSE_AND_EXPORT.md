@@ -50,7 +50,7 @@ chatvault show --pick 2 [--profile read|lean|full]
 chatvault show --pick 2 --raw          # no pager, for piping
 ```
 
-Renders the conversation to the terminal through a pager (`less -R`, or `rich`'s built-in). **Curiosity should not force you to create a file.** This is the command you'll actually use most — `find` then `show`, with `export` reserved for when you genuinely want a file on disk.
+Renders the conversation to the terminal through a pager (the system pager — `$PAGER`/`less` — via the stdlib `pydoc.pager`; no `click` dependency since typer 0.27 vendors it internally). **Curiosity should not force you to create a file.** This is the command you'll actually use most — `find` then `show`, with `export` reserved for when you genuinely want a file on disk.
 
 ## 3. Interactive picker (optional, for the terminal-and-menu instinct)
 

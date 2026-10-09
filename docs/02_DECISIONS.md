@@ -163,6 +163,18 @@ See `10_CONCEPTS_label_tag_project.md`.
 
 ---
 
+## D15 — Only import what's in `pyproject.toml`
+
+**Chosen:** stdlib or declared dependencies for terminal plumbing (pager, editor) — `pydoc.pager`, `tempfile`+`subprocess` — never a transitive dep like `click`.
+
+**Rejected:** `import click` for `echo_via_pager`/`edit`, on the assumption typer always drags it in.
+
+**Why:** it did, until it didn't — typer 0.27 vendored Click internally, so `uv.lock` never contained `click` and both `show`/`stash show` pager branches crashed with `ModuleNotFoundError` the first time they ran on a real TTY (2026-10-09). `brain_cli` had already hit the same wall and documented it; the fix unified both files on the stdlib pattern.
+
+**Rule of thumb:** if it's not listed in `pyproject.toml`'s `dependencies`, it doesn't exist — no matter what transitively happens to be installed today.
+
+---
+
 ## Deliberately not decided
 
 Open by choice, not oversight:
