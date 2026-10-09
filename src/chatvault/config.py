@@ -85,6 +85,10 @@ class Config:
         return self.root / "exports"
 
     @property
+    def logs_dir(self) -> Path:
+        return self.root / "logs"
+
+    @property
     def neo4j_dir(self) -> Path:
         return self.root / "neo4j"
 

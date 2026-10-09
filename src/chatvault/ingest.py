@@ -70,17 +70,35 @@ class IngestSummary:
         return totals
 
 
+# Directory name for already-ingested archives under raw/. Walks that start
+# above this folder skip it; an explicit `chatvault ingest raw/_ingested/...`
+# still processes that tree (relative parts then have no leading `_ingested`).
+_INGESTED_ARCHIVE_DIR = "_ingested"
+
+
+def _under_ingested_archive(p: Path, walk_root: Path) -> bool:
+    """True when p sits under a `_ingested/` component relative to walk_root."""
+    try:
+        rel = p.resolve().relative_to(walk_root.resolve())
+    except ValueError:
+        return False
+    return _INGESTED_ARCHIVE_DIR in rel.parts
+
+
 def _iter_candidate_files(path: Path, exclude_dir: Path | None = None) -> list[Path]:
     exclude_resolved = exclude_dir.resolve() if exclude_dir else None
+    walk_root = path if path.is_dir() else path.parent
 
     def _is_excluded(p: Path) -> bool:
-        if exclude_resolved is None:
-            return False
-        try:
-            p.resolve().relative_to(exclude_resolved)
+        if exclude_resolved is not None:
+            try:
+                p.resolve().relative_to(exclude_resolved)
+                return True
+            except ValueError:
+                pass
+        if path.is_dir() and _under_ingested_archive(p, walk_root):
             return True
-        except ValueError:
-            return False
+        return False
 
     if path.is_file():
         return [] if _is_excluded(path) else [path]

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+from pathlib import Path
 
 from chatvault import ingest
 from tests.conftest import FIXTURES
@@ -1022,3 +1024,22 @@ def test_openclaw_adapter_surfaces_nested_thinking_and_leaves_effort_arg_alone(c
     assert '"thinking": "low"' in rows[1]["text"] or '"thinking":"low"' in rows[1]["text"].replace(" ", "") or "low" in rows[1]["text"]
     assert "shape A" in rows[3]["text"]
     assert "shape B" in rows[5]["text"]
+
+
+def test_ingested_archive_dir_skipped_on_parent_walk(tmp_path: Path):
+    """Files under raw/_ingested/ are ignored when walking raw/, but an
+    explicit ingest of that archive tree still sees them."""
+    raw = tmp_path / "raw"
+    active = raw / "active"
+    archived = raw / "_ingested" / "old_export"
+    active.mkdir(parents=True)
+    archived.mkdir(parents=True)
+    src = FIXTURES / "claude_code" / "session1.jsonl"
+    shutil.copy(src, active / "session1.jsonl")
+    shutil.copy(src, archived / "session1.jsonl")
+
+    found = ingest._iter_candidate_files(raw)
+    assert found == [active / "session1.jsonl"]
+
+    found_direct = ingest._iter_candidate_files(archived)
+    assert found_direct == [archived / "session1.jsonl"]

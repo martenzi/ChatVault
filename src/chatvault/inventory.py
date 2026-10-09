@@ -209,9 +209,13 @@ def _detect_vscdb(path: Path) -> FileReport:
 
 def scan(directory: Path, deep: bool = False) -> InventoryReport:
     """Read-only scan of a directory tree. Never writes anything."""
+    from chatvault.ingest import _under_ingested_archive
+
     report = InventoryReport()
     for path in sorted(directory.rglob("*")):
         if not path.is_file():
+            continue
+        if _under_ingested_archive(path, directory):
             continue
         suffix = path.suffix.lower()
         if suffix not in KNOWN_EXTENSIONS:
