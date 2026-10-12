@@ -32,6 +32,19 @@ def sniff(path: Path) -> bool:
                 if not isinstance(obj, dict):
                     return False
                 keys = set(obj.keys())
+                # Claude Desktop task sessions write a sibling `audit.jsonl`
+                # — an HMAC-signed internal audit stream (`_audit_hmac`,
+                # `_audit_timestamp`) that duplicates every transcript
+                # message verbatim plus bookkeeping (command_lifecycle,
+                # rate_limit_event). Verified 2026-10-12: 867/867 audit
+                # message uuids already present in the session transcript —
+                # zero unique user content, but its `message` key satisfies
+                # the fallback check below and ingests as fake conversations
+                # titled "audit" (63 rows before this guard; see
+                # docs/reports/claude_export_format_2026-10-12.md §8).
+                # Reject on the signature keys, not the filename.
+                if "_audit_hmac" in keys or "_audit_timestamp" in keys:
+                    return False
                 return bool(keys & set(_ROLE_KEYS)) or bool(keys & set(_CONTENT_KEYS))
     except (orjson.JSONDecodeError, OSError):
         return False
