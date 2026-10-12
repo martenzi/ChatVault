@@ -58,6 +58,7 @@ class FileIngestResult:
 class IngestSummary:
     files: list[FileIngestResult] = field(default_factory=list)
     embedding: object = None  # chatvault.embeddings.IndexResult | None
+    artifacts: dict | None = None  # loader.link_artifacts result
 
     @property
     def totals(self) -> dict[str, int]:
@@ -185,6 +186,63 @@ def _ingest_projects_file(
     return result
 
 
+def _ingest_artifacts_file(
+    conn: sqlite3.Connection, file_path: Path, mod, root_dir: str, dry_run: bool
+) -> FileIngestResult:
+    """`artifacts/<id>/artifact.json` -> attachments via loader.load_artifact.
+    `inserted` counts newly created attachment rows, `noop` ones that already
+    existed. Same source_files bookkeeping as projects, adapter `<name>_artifacts`."""
+    adapter_label = f"{mod.name} (artifacts)"
+    artifacts_adapter = f"{mod.name}_artifacts"
+    now = datetime.now(timezone.utc).isoformat()
+    # Hash the artifact.json together with its version files' bytes: the file
+    # alone does not change when a version file is edited.
+    import hashlib
+
+    h = hashlib.sha256()
+    for p in sorted(x for x in file_path.parent.rglob("*") if x.is_file() and x.name != ".DS_Store"):
+        h.update(str(p.relative_to(file_path.parent)).encode())
+        h.update(hashing.file_sha256(p).encode())
+    sha = h.hexdigest()
+
+    existing = conn.execute(
+        "SELECT id, status FROM source_files WHERE sha256 = ? AND adapter = ?", (sha, artifacts_adapter)
+    ).fetchone()
+    if existing is not None and existing["status"] == "ok":
+        if not dry_run:
+            conn.execute("UPDATE source_files SET last_seen_at = ? WHERE id = ?", (now, existing["id"]))
+            conn.commit()
+        return FileIngestResult(file_path, "skipped_dup", adapter=adapter_label)
+    try:
+        artifacts = list(mod.parse_artifacts(file_path))
+    except Exception as exc:  # noqa: BLE001
+        return FileIngestResult(file_path, "failed", adapter=adapter_label, error=str(exc))
+    if dry_run:
+        return FileIngestResult(file_path, "ok", adapter=adapter_label, inserted=sum(len(a["attachments"]) for a in artifacts))
+
+    conn.execute(
+        """
+        INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, kind, last_seen_at, root_dir, first_seen_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'ok', ?, ?, ?, ?)
+        ON CONFLICT(sha256, adapter) DO UPDATE SET
+            status='ok', error=NULL, ingested_at=excluded.ingested_at,
+            last_seen_at=excluded.last_seen_at, root_dir=excluded.root_dir,
+            first_seen_at=COALESCE(source_files.first_seen_at, excluded.first_seen_at)
+        """,
+        (str(file_path), sha, mod.platform, artifacts_adapter, file_path.stat().st_size, now, _kind_for_platform(mod.platform), now, root_dir, now),
+    )
+    source_file_id = conn.execute(
+        "SELECT id FROM source_files WHERE sha256 = ? AND adapter = ?", (sha, artifacts_adapter)
+    ).fetchone()["id"]
+    result = FileIngestResult(file_path, "ok", adapter=adapter_label)
+    for art in artifacts:
+        r = loader.load_artifact(conn, art, source_file_id)
+        result.inserted += r["created"]
+        result.noop += r["attachments"] - r["created"]
+    conn.commit()
+    return result
+
+
 def ingest_path(
     conn: sqlite3.Connection,
     path: Path,
@@ -228,6 +286,12 @@ def ingest_path(
         # and ingest whichever are present.
         matched_projects = False
         if adapter_name is None:
+            artifacts_mod = adapters.detect_artifacts(file_path)
+            if artifacts_mod is not None:
+                summary.files.append(
+                    _ingest_artifacts_file(conn, file_path, artifacts_mod, root_dir, dry_run=dry_run)
+                )
+                continue
             projects_mod = adapters.detect_projects(file_path)
             if projects_mod is not None:
                 summary.files.append(
@@ -345,6 +409,10 @@ def ingest_path(
         from chatvault import dedupe
 
         dedupe.scan_candidates(conn)
+        # Artifacts and the conversations that reference them may arrive in
+        # either order (or different runs); linking reads stored rows only.
+        summary.artifacts = loader.link_artifacts(conn)
+        conn.commit()
 
         if touched_conv_ids:
             from chatvault import tags as tags_mod

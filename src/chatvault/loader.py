@@ -167,6 +167,73 @@ def load_project(conn: sqlite3.Connection, project: dict, source_file_id: int | 
     return {"action": action, "project_id": project_id, "docs": docs}
 
 
+def load_artifact(conn: sqlite3.Connection, artifact: dict, source_file_id: int | None) -> dict:
+    """Store an artifact's version files as attachments (role 'artifact').
+    Dedup is the existing UNIQUE(content_hash, filename): unchanged versions
+    collapse to one row. Linking is deliberately separate (link_artifacts):
+    artifact.json names no conversation, and the conversations may be loaded
+    before or after it."""
+    now = datetime.now(timezone.utc).isoformat()
+    created = 0
+    for att in artifact.get("attachments", []):
+        before = conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0]
+        _get_or_create_attachment(conn, artifact["platform"], att, now)
+        created += conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] - before
+    return {"attachments": len(artifact.get("attachments", [])), "created": created}
+
+
+def link_artifacts(conn: sqlite3.Connection) -> dict:
+    """Idempotently link artifact attachments to the messages that reference
+    them. Reference path enumerated from the 2026-10-12 export: a tool_result
+    whose `structured_content.artifact_id` (mirrored in
+    `display_content.published_artifact_id`) is the artifact UUID, with
+    `structured_content.title` naming the version. A referenced artifact links
+    the versions whose title matches, else its active version. Unreferenced
+    artifacts stay unlinked (D7: flagged by absence, never guessed) and are
+    returned as `orphans`. Resolution reads only stored raw_json, so it works
+    whichever of artifacts/conversations was ingested first."""
+    now = datetime.now(timezone.utc).isoformat()
+    arts: dict[str, list] = {}
+    for row in conn.execute(
+        "SELECT id, raw_json FROM attachments WHERE json_extract(raw_json, '$.artifact.id') IS NOT NULL"
+    ):
+        raw = orjson.loads(row["raw_json"])
+        arts.setdefault(raw["artifact"]["id"], []).append((row["id"], raw))
+
+    linked = 0
+    orphans: list[tuple[str, str | None]] = []
+    referenced = 0
+    for art_id, atts in arts.items():
+        refs = conn.execute(
+            """
+            SELECT b.raw_json AS braw, b.msg_id AS msg_id FROM blocks b
+            JOIN messages m ON m.id = b.msg_id JOIN conversations c ON c.id = m.conv_id
+            WHERE c.platform = 'claude_desktop' AND b.type IN ('tool_result', 'error') AND b.raw_json LIKE ?
+            """,
+            (f"%{art_id}%",),
+        ).fetchall()
+        hits = []
+        for ref in refs:
+            item = orjson.loads(ref["braw"])
+            sc = item.get("structured_content")
+            if isinstance(sc, dict) and sc.get("artifact_id") == art_id:  # not mere substring
+                hits.append((ref["msg_id"], sc.get("title")))
+        if not hits:
+            orphans.append((art_id, atts[0][1]["artifact"].get("kind")))
+            continue
+        referenced += 1
+        active = atts[0][1]["artifact"].get("active_version")
+        for msg_id, title in hits:
+            chosen = [a for a, r in atts if title and r["version"].get("title") == title]
+            if not chosen:
+                chosen = [a for a, r in atts if r["version"].get("id") == active] or [atts[0][0]]
+            for att_id in chosen:
+                before = conn.total_changes
+                _link_attachment(conn, att_id, "message", msg_id, "artifact", now)
+                linked += conn.total_changes - before
+    return {"artifacts": len(arts), "referenced": referenced, "linked": linked, "orphans": orphans}
+
+
 def _backfill_attachments(conn: sqlite3.Connection, conv_id: int, cir: dict) -> int:
     """content_hash is computed from (type, tool_name, text) only — an adapter
     fix that adds attachment *metadata* to blocks whose text/type/tool_name

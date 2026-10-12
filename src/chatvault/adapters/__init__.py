@@ -137,3 +137,21 @@ def detect_projects(path: Path) -> ModuleType | None:
         except Exception:
             continue
     return None
+
+
+def detect_artifacts(path: Path) -> ModuleType | None:
+    """Like detect_projects, for `artifacts/<id>/artifact.json` (Claude's
+    official export). Kept out of detect() so no conversation adapter ever
+    claims an artifact's files."""
+    register_late_adapters()
+    for mod in _REGISTRY.values():
+        sniff_fn = getattr(mod, "sniff_artifacts", None)
+        parse_fn = getattr(mod, "parse_artifacts", None)
+        if sniff_fn is None or parse_fn is None:
+            continue
+        try:
+            if sniff_fn(path):
+                return mod
+        except Exception:
+            continue
+    return None

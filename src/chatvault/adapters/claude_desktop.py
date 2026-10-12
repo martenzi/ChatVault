@@ -7,6 +7,7 @@ from typing import Iterator
 import orjson
 
 from chatvault.adapters.base import make_attachment, make_block, make_conversation, make_message
+from chatvault.adapters.identifiers import decode_utf8_counting_replacements
 
 platform = "claude_desktop"
 name = "claude_desktop"
@@ -296,3 +297,89 @@ def parse_projects(path: Path) -> Iterator[dict]:
             "raw": {k: v for k, v in proj.items() if k != "docs"},
             "docs": docs,
         }
+
+
+def sniff_artifacts(path: Path) -> bool:
+    """`artifacts/<uuid>/artifact.json` from the official export's `frames`
+    ZIP: {id, kind, visibility, versions[], active_version, ...}. Structurally
+    unrelated to conversations.json; routed via adapters.detect_artifacts()."""
+    if path.name != "artifact.json":
+        return False
+    try:
+        with path.open("rb") as fh:
+            prefix = fh.read(65536)
+    except OSError:
+        return False
+    return b'"active_version"' in prefix and b'"versions"' in prefix
+
+
+def _read_text(path: Path) -> str:
+    text, _ = decode_utf8_counting_replacements(path.read_bytes())
+    return text
+
+
+def parse_artifacts(path: Path) -> Iterator[dict]:
+    """One dict per artifact: its version files as role='artifact' attachments.
+
+    Layouts enumerated from the 2026-10-12 export (10 artifacts, 171 files):
+      - flat `versions/<V>.html` (8 artifacts, 9 files) -> ingested;
+      - `page.md` beside artifact.json for kind='page' (1) -> ingested;
+      - `versions/<V>/project/{Main.dc.html,canvas.json}` for canvas artifacts
+        (1 artifact, 7 versions) -> ingested. In the same directories
+        `index.html` (1 distinct hash over 8 versions), `SKILL.md` (1 distinct)
+        and `artifact-type/**` (every file 1 distinct hash over 8 versions)
+        are the editor's scaffolding, not the user's content -> NOT ingested;
+      - `versions/<V>.files.json` -> a file manifest, kept in raw only.
+    Linking to conversations happens later (loader.link_artifacts), because
+    artifact.json carries no conversation reference."""
+    root = path.parent
+    meta = orjson.loads(path.read_bytes())
+    art_id = meta.get("id") or root.name
+    versions = meta.get("versions") or []
+    titles = {v.get("id"): v.get("title") for v in versions if isinstance(v, dict)}
+    active = meta.get("active_version")
+    artifact_raw = {k: v for k, v in meta.items() if k != "versions"}
+    comments = root / "comments.json"
+    if comments.is_file():
+        artifact_raw["comments"] = orjson.loads(comments.read_bytes())
+
+    attachments: list[dict] = []
+
+    def add(filename: str, file_path: Path, version_id: str | None, rel: str) -> None:
+        text = _read_text(file_path)
+        version = next((v for v in versions if v.get("id") == version_id), {})
+        attachments.append(
+            make_attachment(
+                filename=filename,
+                ext=_ext(file_path.name),
+                bytes_=file_path.stat().st_size,
+                content=text or None,
+                availability="text" if text else "missing",
+                role="artifact",
+                raw={"artifact": artifact_raw, "version": version, "path": rel},
+            )
+        )
+
+    vdir = root / "versions"
+    if vdir.is_dir():
+        for vid in sorted(titles, key=lambda i: (i != active, i or "")):
+            title = titles[vid] or vid
+            flat = vdir / f"{vid}.html"
+            if flat.is_file():
+                add(title, flat, vid, f"versions/{vid}.html")
+            proj = vdir / vid / "project"
+            if proj.is_dir():
+                for f in sorted(p for p in proj.iterdir() if p.is_file()):
+                    add(f"{title} \u2014 {f.name}", f, vid, f"versions/{vid}/project/{f.name}")
+    page = root / "page.md"
+    if page.is_file():
+        vid = active if active in titles else (versions[0].get("id") if versions else None)
+        add(titles.get(vid) or art_id, page, vid, "page.md")
+
+    yield {
+        "platform": platform,
+        "native_id": art_id,
+        "kind": meta.get("kind"),
+        "raw": artifact_raw,
+        "attachments": attachments,
+    }

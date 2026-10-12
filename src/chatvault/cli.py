@@ -680,6 +680,12 @@ def _render_ingest_report(summary, path: Path, *, dry_run: bool, verbose: bool, 
         f"totals: inserted={totals['inserted']} noop={totals['noop']} "
         f"superseded={totals['superseded']} reprocessed={reprocessed} flagged={totals['flagged']}"
     )
+    art = getattr(summary, "artifacts", None)
+    if art and art["artifacts"]:
+        console.print(
+            f"artifacts: {art['artifacts']} · referenced={art['referenced']} · links={art['linked']} · "
+            f"orphans={len(art['orphans'])} (unlinked: no conversation references them)"
+        )
 
     detail, omitted = display_mod.select_ingest_detail_rows(summary.files, verbose=verbose)
     dup_n = counts.get("skipped_dup", 0)
