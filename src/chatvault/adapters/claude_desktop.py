@@ -40,7 +40,62 @@ def sniff_projects(path: Path) -> bool:
     return b'"prompt_template"' in prefix and b'"docs"' in prefix and b'"chat_messages"' not in prefix
 
 
-def _blocks_from_content(content, fallback_text: str) -> list[dict]:
+def _display_text(d) -> str:
+    """Text of a tool_use/tool_result `display_content` dict. Shapes enumerated
+    from the 2026-10-12 export (143 results + 137 uses, all dicts): text 56,
+    json_block 175, table 9, code_block 20, rich_link 11, rich_content 6,
+    file 3. Prose-bearing shapes yield their text; the rest are JSON-dumped so
+    nothing is invisible to FTS."""
+    if not isinstance(d, dict):
+        return "" if d in (None, "") else json.dumps(d, default=str)
+    kind = d.get("type")
+    if kind == "text" and isinstance(d.get("text"), str):
+        return d["text"]
+    if kind == "json_block" and isinstance(d.get("json_block"), str):
+        return d["json_block"]
+    if kind == "code_block" and isinstance(d.get("code"), str):
+        return d["code"]
+    return json.dumps(d, default=str)
+
+
+def _structured_text(sc) -> str:
+    """Text of a tool_result `structured_content` dict (114 of 693). 108 carry
+    only {content}, which is unwrapped; the rest (memory ops, artifact refs)
+    are JSON-dumped."""
+    if sc in (None, ""):
+        return ""
+    if isinstance(sc, dict) and set(sc) == {"content"} and isinstance(sc["content"], str):
+        return sc["content"]
+    return json.dumps(sc, default=str)
+
+
+def _with_sections(base: str, item: dict, keys: tuple[str, ...]) -> str:
+    """Append alternate renderings of one tool event to `base`, each under a
+    strippable `--- key ---` delimiter. A section is skipped when empty or when
+    its text already appears in `base` (no doubling)."""
+    out = base
+    for key in keys:
+        val = item.get(key)
+        text = _display_text(val) if key == "display_content" else _structured_text(val)
+        if text and text not in out:
+            out += f"\n\n--- {key} ---\n{text}"
+    return out
+
+
+def _tool_name(item: dict) -> str | None:
+    """Prefix the integration so MCP/built-in tools are distinguishable. MCP
+    names are already namespaced in `name` ("filesystem:read_text_file", 91
+    of 696 uses), so only un-namespaced names are composed ("Claude Code:Bash");
+    `integration_name` is null for 121 uses (plain `bash_tool`, `view`), which
+    stay as-is."""
+    name = item.get("name")
+    integ = item.get("integration_name")
+    if name and integ and ":" not in name:
+        return f"{integ}:{name}"
+    return name
+
+
+def _blocks_from_content(content, fallback_text: str, files_by_uuid: dict | None = None) -> list[dict]:
     if not content:
         if fallback_text:
             return [make_block(0, "text", fallback_text, raw={"text": fallback_text})]
@@ -61,9 +116,9 @@ def _blocks_from_content(content, fallback_text: str) -> list[dict]:
                 make_block(
                     idx,
                     "tool_use",
-                    json.dumps(item.get("input", {}), default=str),
+                    _with_sections(json.dumps(item.get("input", {}), default=str), item, ("display_content",)),
                     raw=item,
-                    tool_name=item.get("name"),
+                    tool_name=_tool_name(item),
                 )
             )
             # docs/audit-shapes/reasoning-sweep.md line 13: `$.input.thought`
@@ -92,9 +147,28 @@ def _blocks_from_content(content, fallback_text: str) -> list[dict]:
         elif item_type == "tool_result":
             inner = item.get("content")
             text = inner if isinstance(inner, str) else json.dumps(inner, default=str)
-            blocks.append(make_block(idx, "tool_result", text, raw=item))
+            text = _with_sections(text, item, ("display_content", "structured_content"))
+            # is_error true on 43 of 693 results (2026-10-12 export).
+            blocks.append(make_block(idx, "error" if item.get("is_error") is True else "tool_result", text, raw=item))
         elif item_type in ("image",):
             blocks.append(make_block(idx, "image", "", raw=item))
+        elif item_type == "injected_prompt_block":
+            # 16 items, `prompt` = the injected text; the provider labels it
+            # explicitly (`injection_source`, kept in raw), so no marker
+            # heuristic (identifiers.is_injected_context) is used.
+            blocks.append(make_block(idx, "injected_context", item.get("prompt") or "", raw=item))
+        elif item_type == "token_budget":
+            # 31 items, payload {remaining: null}: structural, no text.
+            blocks.append(make_block(idx, "meta", "", raw=item))
+        elif item_type == "document":
+            # 6 items: {file_uuid} (+ `title` on 1). All 6 file_uuids match an
+            # entry in the same message's `files`, whose file_name names it
+            # (empty for 5) — recorded as existing, content unavailable.
+            fname = item.get("title") or (files_by_uuid or {}).get(item.get("file_uuid")) or None
+            payload = make_attachment(
+                filename=fname, ext=_ext(fname), availability="missing", role="upload", raw=item
+            )
+            blocks.append(make_block(idx, "attachment", "", raw=item, attachment=payload))
         else:
             blocks.append(make_block(idx, "unknown", "", raw=item))
 
@@ -109,7 +183,7 @@ def _ext(filename: str | None) -> str | None:
     return None
 
 
-def _attachment_blocks(cm: dict, start_idx: int) -> list[dict]:
+def _attachment_blocks(cm: dict, start_idx: int, skip_uuids: frozenset = frozenset()) -> list[dict]:
     blocks: list[dict] = []
     seen_names: set[str] = set()
     for att in cm.get("attachments") or []:
@@ -134,6 +208,9 @@ def _attachment_blocks(cm: dict, start_idx: int) -> list[dict]:
         # text; only add it when it's the only record of that file.
         if f.get("file_name") in seen_names:
             continue
+        # Already emitted as a `document` content item (6 of 92 files).
+        if f.get("file_uuid") in skip_uuids:
+            continue
         payload = make_attachment(
             filename=f.get("file_name"),
             ext=_ext(f.get("file_name")),
@@ -156,8 +233,14 @@ def parse(path: Path) -> Iterator[dict]:
         messages = []
         for idx, cm in enumerate(chat_messages):
             role = _SENDER_TO_ROLE.get(cm.get("sender"), cm.get("sender") or "unknown")
-            blocks = _blocks_from_content(cm.get("content"), cm.get("text", ""))
-            blocks += _attachment_blocks(cm, len(blocks))
+            files_by_uuid = {
+                f.get("file_uuid"): f.get("file_name") for f in cm.get("files") or [] if isinstance(f, dict)
+            }
+            blocks = _blocks_from_content(cm.get("content"), cm.get("text", ""), files_by_uuid)
+            doc_uuids = frozenset(
+                i.get("file_uuid") for i in cm.get("content") or [] if isinstance(i, dict) and i.get("type") == "document"
+            )
+            blocks += _attachment_blocks(cm, len(blocks), doc_uuids)
             messages.append(make_message(idx, role, None, cm.get("created_at"), blocks, raw=cm))
 
         yield make_conversation(
