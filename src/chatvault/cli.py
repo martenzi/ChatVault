@@ -1445,6 +1445,7 @@ def dedupe(
     dismiss: int = typer.Option(None, "--dismiss", help="Candidate id to mark not-a-duplicate; stops re-flagging."),
     reason: str = typer.Option(None, "--reason", help="With --dismiss, why this isn't a duplicate."),
     undo: int = typer.Option(None, "--undo", help="Reverse a previously applied candidate."),
+    sweep: bool = typer.Option(False, "--sweep", help="Second pass over review/duplicate-ambiguous two-row families: supersede the row whose normalised body is contained in the other's. Dry-run unless --apply."),
     snapshots: bool = typer.Option(False, "--snapshots", help="Backfill: supersede same-native_id live rows that are byte-identical or a prefix of a longer one. Dry-run unless --apply."),
 ) -> None:
     """Cross-source dedupe. --apply only ever writes conversations.superseded_by —
@@ -1457,7 +1458,16 @@ def dedupe(
             n = dedupe_mod.scan_candidates(conn)
             console.print(f"scan: {n} new candidate(s)")
 
-        if snapshots:
+        if sweep:
+            if apply:
+                _auto_backup(config, "pre-dedupe-sweep")
+            r = dedupe_mod.sweep_cross_format(conn, apply=apply)
+            console.print(
+                f"sweep{'' if apply else ' (dry run)'}: {r['families']} tagged two-row famil(ies); "
+                f"{r['tier1']} resolved by whitespace-normalised containment, {r['tier2']} by entity/punctuation-normalised; "
+                f"{len(r['remaining'])} left for review"
+            )
+        elif snapshots:
             if apply:
                 _auto_backup(config, "pre-dedupe-snapshots")
             r = dedupe_mod.backfill_snapshots(conn, apply=apply)

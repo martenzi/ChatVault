@@ -207,3 +207,33 @@ def test_backfill_snapshots_supersedes_prefixes_and_identicals_and_tags_forks(co
     # Idempotent.
     again = dedupe.backfill_snapshots(conn, apply=True)
     assert again["identical"] == 0 and again["prefix"] == 0
+
+
+def test_sweep_cross_format_supersedes_contained_body_and_leaves_disjoint(conn):
+    from chatvault import dedupe, tags as tags_mod
+
+    def row(native_id, uid, texts, btype="text"):
+        c = _grow(native_id, texts)
+        for m in c["messages"]:
+            m["blocks"][0]["type"] = btype
+        h = loader._compute_hashes(c)
+        cid = loader._insert_conversation_row(conn, c, uid, h["content_hash"], h["head_hash"], None, "2026-01-01T00:00:00", h)
+        loader._flag_ambiguous(conn, cid, "2026-01-01T00:00:00")
+        return cid
+
+    short = row("s1", "synthetic:s1", ["hello &amp; welcome", "ok"])
+    long_ = row("s1", "synthetic:s1#dup-x", ["hello & welcome", "ok", "more"])
+    d1 = row("s2", "synthetic:s2", ["alpha beta"])
+    d2 = row("s2", "synthetic:s2#dup-y", ["gamma delta"])
+    conn.commit()
+
+    dry = dedupe.sweep_cross_format(conn, apply=False)
+    assert (dry["tier1"], dry["tier2"], len(dry["remaining"])) == (0, 1, 1)
+    assert conn.execute("SELECT COUNT(*) FROM conversations WHERE superseded_by IS NOT NULL").fetchone()[0] == 0
+
+    dedupe.sweep_cross_format(conn, apply=True)
+    assert conn.execute("SELECT superseded_by FROM conversations WHERE id = ?", (short,)).fetchone()[0] == long_
+    assert [r[0] for r in conn.execute("SELECT superseded_by FROM conversations WHERE id IN (?, ?)", (d1, d2))] == [None, None]
+    # Winner loses its ambiguity tag; the disjoint pair keeps theirs.
+    tagged = {r[0] for r in conn.execute("SELECT target_id FROM tag_links")}
+    assert tagged == {short, d1, d2}

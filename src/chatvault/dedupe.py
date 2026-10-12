@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import html
 import json
+import re
 import sqlite3
+import unicodedata
 from datetime import datetime, timezone
 
 
@@ -284,6 +287,93 @@ def backfill_snapshots(conn: sqlite3.Connection, apply: bool = False) -> dict:
     if apply:
         conn.commit()
     return result
+
+
+_WS = re.compile(r"\s+")
+_PUNCT = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"', "\u2013": "-", "\u2014": "-", "\u00a0": " "})
+
+
+def _body(conn: sqlite3.Connection, conv_id: int, tight: bool) -> str:
+    """Block text in (msg.idx, block.idx) order, whitespace-collapsed. `tight`
+    additionally decodes HTML entities, folds Unicode/punctuation variants and
+    ignores `system` blocks (the hermes .jsonl copy leads with a
+    "session_meta: N tool(s) available" block the .json copy lacks; verified
+    on 9 real families). See docs/reports/snapshot_duplication_2026-10-12.md §8."""
+    rows = conn.execute(
+        "SELECT b.text FROM blocks b JOIN messages m ON m.id = b.msg_id "
+        "WHERE m.conv_id = ? AND (? = 0 OR b.type != 'system') ORDER BY m.idx, b.idx",
+        (conv_id, int(tight)),
+    ).fetchall()
+    text = "\n".join(r[0] or "" for r in rows)
+    if tight:
+        text = unicodedata.normalize("NFKC", html.unescape(text)).translate(_PUNCT)
+    return _WS.sub(" ", text).strip()
+
+
+def sweep_cross_format(conn: sqlite3.Connection, apply: bool = False) -> dict:
+    """Second pass over families that backfill_snapshots left divergent
+    (§8). For two-row families only: if one row's normalised body appears
+    verbatim inside the other's, the shorter is a lossy/partial copy of the
+    same conversation and is superseded by the longer. Tier 1 compares
+    whitespace-collapsed text; tier 2 also entity-decodes and folds punctuation.
+    Anything else is left live and tagged — disjoint or genuinely lossy copies
+    need an adapter diagnosis or a human, not a heuristic. Never deletes."""
+    out = {"families": 0, "tier1": 0, "tier2": 0, "remaining": [], "untagged": 0}
+    now = _now()
+    tag_id = conn.execute("SELECT id FROM tags WHERE name = 'review/duplicate-ambiguous'").fetchone()
+    if tag_id is None:
+        return out
+    fams = conn.execute(
+        """
+        SELECT platform, native_id FROM conversations
+        WHERE superseded_by IS NULL AND native_id IS NOT NULL
+        GROUP BY platform, native_id HAVING COUNT(*) = 2
+        """
+    ).fetchall()
+    for fam in fams:
+        a, b = conn.execute(
+            "SELECT id, uid FROM conversations WHERE platform = ? AND native_id = ? AND superseded_by IS NULL ORDER BY id",
+            (fam["platform"], fam["native_id"]),
+        ).fetchall()
+        if not all(
+            conn.execute(
+                "SELECT 1 FROM tag_links WHERE tag_id = ? AND target_type = 'conversation' AND target_id = ?",
+                (tag_id[0], r["id"]),
+            ).fetchone()
+            for r in (a, b)
+        ):
+            continue
+        out["families"] += 1
+        verdict = None
+        for tier, tight in (("tier1", False), ("tier2", True)):
+            ba, bb = _body(conn, a["id"], tight), _body(conn, b["id"], tight)
+            (s_row, l_row), (s_txt, l_txt) = ((a, b), (ba, bb)) if len(ba) <= len(bb) else ((b, a), (bb, ba))
+            if s_txt and s_txt in l_txt:
+                verdict = (tier, s_row, l_row)
+                break
+        if verdict is None:
+            out["remaining"].append((fam["platform"], fam["native_id"], a["id"], b["id"]))
+            continue
+        tier, s_row, l_row = verdict
+        out[tier] += 1
+        if apply:
+            conn.execute("UPDATE conversations SET superseded_by = ? WHERE id = ?", (l_row["id"], s_row["id"]))
+            conn.execute(
+                """
+                INSERT INTO exclusion_log (target_type, target_id, action, reason, rule, created_at)
+                VALUES ('conversation', ?, 'supersede', ?, ?, ?)
+                """,
+                (s_row["id"], f"sweep: body contained in conversation {l_row['id']}", f"sweep:body-subset-{tier}", now),
+            )
+            # The surviving row is no longer ambiguous.
+            conn.execute(
+                "DELETE FROM tag_links WHERE tag_id = ? AND target_type = 'conversation' AND target_id = ?",
+                (tag_id[0], l_row["id"]),
+            )
+            out["untagged"] += 1
+    if apply:
+        conn.commit()
+    return out
 
 
 def report(conn: sqlite3.Connection) -> dict:
