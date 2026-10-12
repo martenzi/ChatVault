@@ -16,7 +16,7 @@ def _json(obj) -> str:
 
 @dataclass
 class LoadResult:
-    action: str  # inserted | noop | superseded | flagged_duplicate | failed
+    action: str  # inserted | noop | superseded | snapshot | flagged_duplicate | failed
     conv_id: int | None
     uid: str
     detail: str = ""
@@ -383,60 +383,129 @@ def reprocess_conversation(
     return LoadResult("reprocessed", conv_id, existing["uid"], "updated extracted content in place")
 
 
+def _msg_hashes(conn: sqlite3.Connection, conv_id: int) -> list[str]:
+    return [
+        r[0]
+        for r in conn.execute("SELECT content_hash FROM messages WHERE conv_id = ? ORDER BY idx", (conv_id,))
+    ]
+
+
+def _live_head(conn: sqlite3.Connection, conv_id: int) -> int:
+    """Follows superseded_by to the end of the chain (cycle-guarded)."""
+    seen = {conv_id}
+    while True:
+        row = conn.execute("SELECT superseded_by FROM conversations WHERE id = ?", (conv_id,)).fetchone()
+        if row is None or row[0] is None or row[0] in seen:
+            return conv_id
+        conv_id = row[0]
+        seen.add(conv_id)
+
+
+def _log_supersede(conn: sqlite3.Connection, target_id: int, by_id: int, now: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO exclusion_log (target_type, target_id, action, reason, rule, created_at)
+        VALUES ('conversation', ?, 'supersede', ?, ?, ?)
+        """,
+        (target_id, f"loader: snapshot prefix of conversation {by_id}", "loader:snapshot-prefix", now),
+    )
+
+
+def _flag_ambiguous(conn: sqlite3.Connection, conv_id: int, now: str) -> None:
+    # Imported lazily: tags imports export, which must not be a load-time dependency of the loader.
+    from chatvault import tags as tags_mod
+
+    tag_id = tags_mod.get_or_create_tag(conn, "review/duplicate-ambiguous")
+    conn.execute(
+        """
+        INSERT INTO tag_links (tag_id, target_type, target_id, source, created_at)
+        VALUES (?, 'conversation', ?, 'system', ?)
+        ON CONFLICT(tag_id, target_type, target_id) DO NOTHING
+        """,
+        (tag_id, conv_id, now),
+    )
+
+
 def load_conversation(conn: sqlite3.Connection, cir: dict, source_file_id: int) -> LoadResult:
     hashes = _compute_hashes(cir)
     content_hash = hashes["content_hash"]
     head_hash = hashes["head_hash"]
+    msg_hashes = hashes["message_hashes"]
     uid = hashing.make_uid(cir["platform"], cir.get("native_id"), content_hash)
     now = datetime.now(timezone.utc).isoformat()
-    message_count = len(cir["messages"])
 
+    # Every row sharing this platform+native_id: the live head, superseded
+    # snapshots (renamed "#superseded-N"), and any "#dup-"/"#snapshot-" rows.
+    # Live transcripts grow and are re-ingested out of order, so the incoming
+    # content can be older than, newer than, or identical to any of them
+    # (docs/reports/snapshot_duplication_2026-10-12.md).
+    family = []
+    if cir.get("native_id"):
+        family = conn.execute(
+            "SELECT id, uid, content_hash, message_count, superseded_by FROM conversations "
+            "WHERE platform = ? AND native_id = ? ORDER BY id",
+            (cir["platform"], cir["native_id"]),
+        ).fetchall()
     existing = conn.execute(
         "SELECT id, uid, content_hash, head_hash, message_count FROM conversations WHERE uid = ?",
         (uid,),
     ).fetchone()
 
-    if existing is None:
+    if existing is None and not family:
         conv_id = _insert_conversation_row(conn, cir, uid, content_hash, head_hash, source_file_id, now, hashes)
         return LoadResult("inserted", conv_id, uid)
 
-    if existing["content_hash"] == content_hash:
-        backfilled = _backfill_attachments(conn, existing["id"], cir)
+    # Byte-identical content already stored under this native_id, whatever its
+    # uid suffix: a no-op, never a "-2" copy.
+    identical = next((r for r in family if r["content_hash"] == content_hash), None)
+    if identical is None and existing is not None and existing["content_hash"] == content_hash:
+        identical = existing
+    if identical is not None:
+        backfilled = _backfill_attachments(conn, identical["id"], cir)
         detail = "identical content already present"
         if backfilled:
             detail += f"; backfilled attachment metadata on {backfilled} block(s)"
-        return LoadResult("noop", existing["id"], uid, detail)
+        return LoadResult("noop", identical["id"], identical["uid"], detail)
 
-    is_continuation = False
-    if message_count > existing["message_count"]:
-        existing_msg_hashes = [
-            row[0]
-            for row in conn.execute(
-                "SELECT content_hash FROM messages WHERE conv_id = ? ORDER BY idx", (existing["id"],)
-            ).fetchall()
-        ]
-        is_continuation = hashes["message_hashes"][: len(existing_msg_hashes)] == existing_msg_hashes
+    n = len(msg_hashes)
+    contained_in = []  # family rows the incoming content is a proper prefix of
+    contains = []  # family rows that are a proper prefix of the incoming content
+    for r in family:
+        theirs = _msg_hashes(conn, r["id"])
+        if len(theirs) > n and theirs[:n] == msg_hashes:
+            contained_in.append((len(theirs), r))
+        elif len(theirs) < n and msg_hashes[: len(theirs)] == theirs:
+            contains.append(r)
 
-    if is_continuation:
-        renamed = f"{uid}#superseded-{existing['id']}"
-        conn.execute("UPDATE conversations SET uid = ? WHERE id = ?", (renamed, existing["id"]))
+    if contained_in:
+        # Older snapshot arriving after a longer one: keep it (D3), but hidden
+        # behind the live head.
+        head_id = _live_head(conn, max(contained_in, key=lambda t: t[0])[1]["id"])
+        snap_uid = f"{uid}#snapshot-{content_hash[:8]}"
+        while conn.execute("SELECT 1 FROM conversations WHERE uid = ?", (snap_uid,)).fetchone() is not None:
+            snap_uid += "-x"
+        conv_id = _insert_conversation_row(conn, cir, snap_uid, content_hash, head_hash, source_file_id, now, hashes)
+        conn.execute("UPDATE conversations SET superseded_by = ? WHERE id = ?", (head_id, conv_id))
+        _log_supersede(conn, conv_id, head_id, now)
+        return LoadResult("snapshot", conv_id, snap_uid, f"older snapshot of conversation id={head_id}")
+
+    contains_ids = {r["id"] for r in contains}
+    if contains and (existing is None or existing["id"] in contains_ids):
+        # Continuation: incoming becomes the head at the base uid.
+        if existing is not None:
+            conn.execute("UPDATE conversations SET uid = ? WHERE id = ?", (f"{uid}#superseded-{existing['id']}", existing["id"]))
         conv_id = _insert_conversation_row(conn, cir, uid, content_hash, head_hash, source_file_id, now, hashes)
-        conn.execute("UPDATE conversations SET superseded_by = ? WHERE id = ?", (conv_id, existing["id"]))
-        return LoadResult("superseded", conv_id, uid, f"superseded conversation id={existing['id']}")
+        for r in contains:
+            if r["id"] == (existing["id"] if existing is not None else None) or r["superseded_by"] is None:
+                conn.execute("UPDATE conversations SET superseded_by = ? WHERE id = ?", (conv_id, r["id"]))
+                if existing is None or r["id"] != existing["id"]:
+                    _log_supersede(conn, r["id"], conv_id, now)
+        return LoadResult("superseded", conv_id, uid, f"superseded {len(contains)} earlier snapshot(s)")
 
-    # Base alt_uid is deterministic (uid + content_hash prefix), which is right
-    # for the common case: the same ambiguous duplicate re-ingested later
-    # resolves to the same row instead of piling up copies. But three or more
-    # *distinct source files* can independently produce byte-identical CIR
-    # content that collides with this same uid (seen for real: sandboxed
-    # Claude Desktop "local agent mode" sessions can carry duplicate
-    # transcript copies) — the second occurrence's alt_uid is a legitimate
-    # re-resolve to the same row (handled above via existing/content_hash
-    # match on a *prior insert's own uid*), but a third+ file racing the
-    # same base alt_uid before that row exists would otherwise hit a UNIQUE
-    # constraint on conversations.uid. Disambiguate with an incrementing
-    # suffix so ingest never crashes on this — still fully deterministic and
-    # idempotent (a re-ingest of the same file set lands on the same uids).
+    # Genuinely divergent content under one native_id. Base alt_uid is
+    # deterministic (uid + content_hash prefix), so the same ambiguous
+    # duplicate re-ingested later resolves to the same row. The suffix loop is
+    # only a UNIQUE-collision guard for distinct content sharing a hash prefix.
     base_alt_uid = f"{uid}#dup-{content_hash[:8]}"
     alt_uid = base_alt_uid
     suffix = 1
@@ -444,12 +513,13 @@ def load_conversation(conn: sqlite3.Connection, cir: dict, source_file_id: int) 
         suffix += 1
         alt_uid = f"{base_alt_uid}-{suffix}"
     conv_id = _insert_conversation_row(conn, cir, alt_uid, content_hash, head_hash, source_file_id, now, hashes)
+    _flag_ambiguous(conn, conv_id, now)
     return LoadResult(
         "flagged_duplicate",
         conv_id,
         alt_uid,
-        f"uid collision with conversation id={existing['id']} but neither identical nor a clean continuation; "
-        "review with `chatvault dedupe --report`",
+        f"divergent content under native_id {cir.get('native_id')!r} (neither identical, prefix nor continuation); "
+        "tagged review/duplicate-ambiguous — see `chatvault dedupe --report`",
     )
 
 

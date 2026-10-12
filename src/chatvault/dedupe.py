@@ -211,6 +211,81 @@ def undo(conn: sqlite3.Connection, candidate_id: int) -> None:
     conn.commit()
 
 
+def backfill_snapshots(conn: sqlite3.Connection, apply: bool = False) -> dict:
+    """Retroactive version of the loader's snapshot logic
+    (docs/reports/snapshot_duplication_2026-10-12.md §5.4). Within each
+    platform+native_id family of live rows: a byte-identical copy is superseded
+    by the lowest id; a strict message-hash prefix is superseded by the longest
+    live row containing it. Never deletes (D3) and never touches blocks.
+    Families still holding more than one live row afterwards are divergent;
+    their live rows get review/duplicate-ambiguous (apply only).
+    Returns counts; with apply=False nothing is written."""
+    from chatvault import tags as tags_mod
+
+    result = {"families": 0, "identical": 0, "prefix": 0, "ambiguous_families": 0, "ambiguous_rows": 0}
+    now = _now()
+    fams = conn.execute(
+        """
+        SELECT platform, native_id FROM conversations
+        WHERE superseded_by IS NULL AND native_id IS NOT NULL
+        GROUP BY platform, native_id HAVING COUNT(*) > 1
+        """
+    ).fetchall()
+    for fam in fams:
+        rows = conn.execute(
+            "SELECT id, content_hash, message_count FROM conversations "
+            "WHERE platform = ? AND native_id = ? AND superseded_by IS NULL ORDER BY id",
+            (fam["platform"], fam["native_id"]),
+        ).fetchall()
+        result["families"] += 1
+        live = {r["id"]: r for r in rows}
+        moves: list[tuple[int, int, str]] = []
+        seen_hash: dict[str, int] = {}
+        for r in rows:
+            keep = seen_hash.setdefault(r["content_hash"], r["id"])
+            if keep != r["id"]:
+                moves.append((r["id"], keep, "identical"))
+                del live[r["id"]]
+        hashes = {i: _message_hashes(conn, i) for i in live}
+        for i in sorted(live, key=lambda i: len(hashes[i])):
+            containers = [
+                j for j in live
+                if j != i and len(hashes[j]) > len(hashes[i]) and hashes[j][: len(hashes[i])] == hashes[i]
+            ]
+            if containers:
+                moves.append((i, max(containers, key=lambda j: len(hashes[j])), "prefix"))
+        moved = {m[0] for m in moves}
+        remaining = [i for i in live if i not in moved]
+        for target, by, kind in moves:
+            result[kind] += 1
+            if apply:
+                conn.execute("UPDATE conversations SET superseded_by = ? WHERE id = ?", (by, target))
+                conn.execute(
+                    """
+                    INSERT INTO exclusion_log (target_type, target_id, action, reason, rule, created_at)
+                    VALUES ('conversation', ?, 'supersede', ?, ?, ?)
+                    """,
+                    (target, f"backfill: {kind} of conversation {by}", f"backfill:snapshot-{kind}", now),
+                )
+        if len(remaining) > 1:
+            result["ambiguous_families"] += 1
+            result["ambiguous_rows"] += len(remaining)
+            if apply:
+                tag_id = tags_mod.get_or_create_tag(conn, "review/duplicate-ambiguous")
+                for i in remaining:
+                    conn.execute(
+                        """
+                        INSERT INTO tag_links (tag_id, target_type, target_id, source, created_at)
+                        VALUES (?, 'conversation', ?, 'system', ?)
+                        ON CONFLICT(tag_id, target_type, target_id) DO NOTHING
+                        """,
+                        (tag_id, i, now),
+                    )
+    if apply:
+        conn.commit()
+    return result
+
+
 def report(conn: sqlite3.Connection) -> dict:
     superseded = conn.execute(
         "SELECT id, uid, superseded_by FROM conversations WHERE superseded_by IS NOT NULL"

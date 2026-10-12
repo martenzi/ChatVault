@@ -34,16 +34,71 @@ def test_third_identical_duplicate_does_not_collide_on_alt_uid(conn):
     dup1 = _load(conn, _cir("x1", "dup", "2026-01-01T00:00:00", "something unrelated"))
     assert dup1.action == "flagged_duplicate"
 
-    # Same native_id, byte-identical content to dup1 — must not crash, and
-    # must land on a distinct uid rather than colliding with dup1's.
+    # Same native_id, byte-identical content to dup1 — the original crash was a
+    # UNIQUE collision on the alt_uid. Since 2026-10-12 it is a no-op instead:
+    # byte-identical content is never stored twice (snapshot_duplication report).
     dup2 = _load(conn, _cir("x1", "dup", "2026-01-01T00:00:00", "something unrelated"))
-    assert dup2.action == "flagged_duplicate"
-    assert dup2.uid != dup1.uid
-    assert dup2.uid.startswith(dup1.uid)  # deterministic base, disambiguated suffix
+    assert dup2.action == "noop"
+    assert dup2.uid == dup1.uid
+    dup3 = _load(conn, _cir("x1", "dup", "2026-01-01T00:00:00", "something unrelated"))
+    assert dup3.action == "noop"
 
     rows = conn.execute("SELECT uid FROM conversations WHERE platform = 'synthetic'").fetchall()
-    assert len(rows) == 3
-    assert len({r["uid"] for r in rows}) == 3  # all distinct, no collision
+    assert len(rows) == 2
+
+
+def _grow(native_id, texts):
+    msgs = [
+        make_message(i, "user", None, "2026-01-01T00:00:00", [make_block(0, "text", t, raw={})], raw={})
+        for i, t in enumerate(texts)
+    ]
+    return make_conversation(
+        platform="synthetic", native_id=native_id, title="t", project=None,
+        started_at="2026-01-01T00:00:00", ended_at="2026-01-01T00:00:00",
+        source_path="synthetic", raw={}, messages=msgs,
+    )
+
+
+def _live(conn):
+    return conn.execute(
+        "SELECT message_count FROM conversations WHERE platform='synthetic' AND superseded_by IS NULL"
+    ).fetchall()
+
+
+def test_older_snapshot_arriving_after_longer_is_hidden_not_duplicated(conn):
+    """Real case (native_id 7df6576a…): 89/211/218/379/470/586/869-message
+    snapshots of one growing transcript, ingested out of order. Shorter ones
+    arriving after a longer one used to become live '#dup-' rows."""
+    long = _load(conn, _grow("g1", ["a", "b", "c", "d"]))
+    assert long.action == "inserted"
+    short = _load(conn, _grow("g1", ["a", "b"]))
+    assert short.action == "snapshot"
+    assert "#snapshot-" in short.uid
+    assert [r["message_count"] for r in _live(conn)] == [4]
+    row = conn.execute("SELECT superseded_by FROM conversations WHERE id = ?", (short.conv_id,)).fetchone()
+    assert row["superseded_by"] == long.conv_id
+    # Re-ingest of the same snapshot is a no-op, not a second copy.
+    assert _load(conn, _grow("g1", ["a", "b"])).action == "noop"
+    assert conn.execute("SELECT COUNT(*) FROM conversations WHERE platform='synthetic'").fetchone()[0] == 2
+
+
+def test_growing_transcript_supersedes_all_earlier_snapshots_in_any_order(conn):
+    _load(conn, _grow("g2", ["a", "b"]))
+    _load(conn, _grow("g2", ["a", "b", "c", "d"]))
+    _load(conn, _grow("g2", ["a"]))  # older, arrives late
+    _load(conn, _grow("g2", ["a", "b", "c", "d", "e"]))
+    assert [r["message_count"] for r in _live(conn)] == [5]
+    assert conn.execute("SELECT COUNT(*) FROM conversations WHERE platform='synthetic'").fetchone()[0] == 4
+
+
+def test_divergent_fork_is_flagged_with_review_tag(conn):
+    _load(conn, _grow("g3", ["a", "b"]))
+    forked = _load(conn, _grow("g3", ["a", "X", "Y"]))
+    assert forked.action == "flagged_duplicate"
+    tag = conn.execute(
+        "SELECT t.name FROM tag_links l JOIN tags t ON t.id = l.tag_id WHERE l.target_id = ?", (forked.conv_id,)
+    ).fetchone()
+    assert tag["name"] == "review/duplicate-ambiguous"
 
 
 def test_reprocess_updates_content_in_place_and_preserves_identity_and_raw_json(conn):
@@ -120,3 +175,35 @@ def test_reprocess_rejects_structural_changes_without_modifying_rows(conn):
 
     row = conn.execute("SELECT title, message_count FROM conversations WHERE id = ?", (loaded.conv_id,)).fetchone()
     assert (row["title"], row["message_count"]) == ("original", 1)
+
+
+def test_backfill_snapshots_supersedes_prefixes_and_identicals_and_tags_forks(conn):
+    from chatvault import dedupe
+
+    def raw_row(native_id, uid, texts):
+        c = _grow(native_id, texts)
+        h = loader._compute_hashes(c)
+        return loader._insert_conversation_row(
+            conn, c, uid, h["content_hash"], h["head_hash"], None, "2026-01-01T00:00:00", h
+        )
+
+    # Pre-fix state: every ingest order left live rows behind.
+    raw_row("b1", "synthetic:b1", ["a", "b", "c"])
+    short = raw_row("b1", "synthetic:b1#dup-aaaa", ["a"])
+    ident = raw_row("b1", "synthetic:b1#dup-bbbb", ["a", "b", "c"])
+    raw_row("b2", "synthetic:b2", ["a", "b"])
+    raw_row("b2", "synthetic:b2#dup-cccc", ["a", "Z"])
+    conn.commit()
+
+    dry = dedupe.backfill_snapshots(conn, apply=False)
+    assert (dry["identical"], dry["prefix"], dry["ambiguous_families"]) == (1, 1, 1)
+    assert conn.execute("SELECT COUNT(*) FROM conversations WHERE superseded_by IS NOT NULL").fetchone()[0] == 0
+
+    done = dedupe.backfill_snapshots(conn, apply=True)
+    assert done == dry
+    sup = {r["id"] for r in conn.execute("SELECT id FROM conversations WHERE superseded_by IS NOT NULL")}
+    assert sup == {short, ident}
+    assert conn.execute("SELECT COUNT(*) FROM tag_links").fetchone()[0] == 2  # both live b2 rows
+    # Idempotent.
+    again = dedupe.backfill_snapshots(conn, apply=True)
+    assert again["identical"] == 0 and again["prefix"] == 0

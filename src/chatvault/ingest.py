@@ -324,6 +324,8 @@ def ingest_path(
             elif load_result.action == "superseded":
                 result.superseded += 1
                 touched_conv_ids.append(load_result.conv_id)
+            elif load_result.action == "snapshot":
+                result.superseded += 1
             elif load_result.action == "reprocessed":
                 result.reprocessed += 1
                 touched_conv_ids.append(load_result.conv_id)

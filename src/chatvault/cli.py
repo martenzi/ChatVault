@@ -1445,6 +1445,7 @@ def dedupe(
     dismiss: int = typer.Option(None, "--dismiss", help="Candidate id to mark not-a-duplicate; stops re-flagging."),
     reason: str = typer.Option(None, "--reason", help="With --dismiss, why this isn't a duplicate."),
     undo: int = typer.Option(None, "--undo", help="Reverse a previously applied candidate."),
+    snapshots: bool = typer.Option(False, "--snapshots", help="Backfill: supersede same-native_id live rows that are byte-identical or a prefix of a longer one. Dry-run unless --apply."),
 ) -> None:
     """Cross-source dedupe. --apply only ever writes conversations.superseded_by —
     never touches blocks or excluded. Level 4 (repeated blocks) stays report-only
@@ -1456,7 +1457,17 @@ def dedupe(
             n = dedupe_mod.scan_candidates(conn)
             console.print(f"scan: {n} new candidate(s)")
 
-        if apply:
+        if snapshots:
+            if apply:
+                _auto_backup(config, "pre-dedupe-snapshots")
+            r = dedupe_mod.backfill_snapshots(conn, apply=apply)
+            console.print(
+                f"snapshots{'' if apply else ' (dry run)'}: {r['families']} famil(ies) with >1 live row; "
+                f"{r['identical']} identical + {r['prefix']} prefix row(s) superseded; "
+                f"{r['ambiguous_families']} divergent famil(ies) / {r['ambiguous_rows']} row(s) left live"
+                f"{' and tagged review/duplicate-ambiguous' if apply else ''}"
+            )
+        elif apply:
             _auto_backup(config, "pre-dedupe-apply")
             if candidate is not None:
                 applied, detail = dedupe_mod.apply_candidate(conn, candidate)
