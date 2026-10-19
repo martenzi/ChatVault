@@ -2,7 +2,7 @@
 
 **Written:** 2026-09-07 · Claude (Opus 5) · **Status: not started**
 **Audience:** a coding model executing this end to end. **This spec is written to be executed without asking further questions** — §8 pre-answers the design decisions a coding model would otherwise raise.
-**Companions:** `docs/50_SPEC_ingestion_fidelity_v1.md` (ingestion), `docs/45_SPEC_brain_v2_full.md` (Brain schema/commands as built), `docs/User Guided Docs/2nd Brain/BRAIN_FAQ.md` (plain-language rationale).
+**Companions:** `docs/50_SPEC_ingestion_fidelity_v1.md` (ingestion), `docs/45_SPEC_brain_v2_full.md` (Brain schema/commands as built), `BRAIN_FAQ` (internal, not in the public release — plain-language rationale).
 
 ---
 
@@ -368,7 +368,7 @@ consumes — so if phases interleave, re-verify 5.6 after spec 50's Phase 1 land
 
 - `STATUS.md` — build-log row per phase; close the naming/parity open items.
 - `docs/45_SPEC_brain_v2_full.md` — update the command surface to the new names.
-- `docs/User Guided Docs/2nd Brain/BRAIN_FAQ.md` — already updated by
-  `docs/User Guided Docs/2nd Brain/COMMANDS_WHAT_THEY_ACTUALLY_DO.md`; cross-link the two.
+- `docs/guides/second-brain/faq.md` — already updated by
+  `docs/guides/second-brain/commands.md`; cross-link the two.
 - `docs/02_DECISIONS.md` — add a decision recording the AI-vs-scripted naming rule (§1.2), with
   rejected alternatives (evocative names; a global `--ai` flag; a separate `chatvault-ai` binary).

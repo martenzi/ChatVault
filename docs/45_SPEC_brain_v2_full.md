@@ -3,7 +3,7 @@
 **For:** Claude Code · **Sonnet, mid effort** · ~2 days total, 5 independent phases
 **Written:** 2026-08-26
 **Supersedes:** `42_SPEC_brain_db.md` §3 (schema) and §4 (commands). `44_BRAIN_options_and_neo4j.md` is analysis, not a build target.
-**Companion:** `User Guided Docs/BRAIN_FAQ.md` — terminology and rationale
+**Companion:** `BRAIN_FAQ` (internal, not in the public release) — terminology and rationale
 
 **Build all of it.** This spec is deliberately complete rather than incremental; the user has decided on the tool and wants full functionality from the start.
 

@@ -1,6 +1,6 @@
 # ChatVault — Tagging: What You'll Actually See and Do
 
-**Revises:** archive/CHATVAULT_INTERFACE_STRATEGY.md §3, which was wrong about tagging.
+**Revises:** `docs/archive/CHATVAULT_INTERFACE_STRATEGY.md` §3, which was wrong about tagging.
 
 I told you Datasette would cover browsing and filtering. That's true. I implied it would cover tagging too. **It won't** — Datasette is built for reading, not for putting data in. Clicking tags onto fifty conversations is not something it does well. Correcting that here.
 

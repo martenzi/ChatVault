@@ -2,7 +2,7 @@
 
 **Written:** 2026-09-07 · Claude (Opus 5) · **Status: not started**
 **Audience:** a coding model executing this end to end.
-**Companion audit (read first, it holds the measured evidence):** `docs/49_AUDIT_ingestion_fidelity_vs_json_tool_2026-09-07.md`
+**Companion audit (read first, it holds the measured evidence):** `49_AUDIT_ingestion_fidelity_vs_json_tool_2026-09-07.md` (internal, not in the public release)
 **Source of the identifier map:** `~/Desktop/history-r/tools/markdown_v4/` — `_session_extractor_core_v4.0.py` (626 lines) plus the three mode wrappers and `EXTRACTION_v4.0_CHANGELOG.txt`. **Read all of them in full before writing any code.**
 
 ---
@@ -513,10 +513,10 @@ correct any reading of it before adapters are touched.
 ## 9. Update these docs when done
 
 - `STATUS.md` — a build-log row per phase, and close the two Open items added 2026-09-07.
-- `docs/49_AUDIT_ingestion_fidelity_vs_json_tool_2026-09-07.md` — dated resolution banner with the real after-numbers.
+- `49_AUDIT_ingestion_fidelity_vs_json_tool_2026-09-07.md` (internal, not in the public release) — dated resolution banner with the real after-numbers.
 - `docs/02_DECISIONS.md` — a new decision recording that the standalone converter's identifier map
   is the canonical source for provider-shape knowledge, with rejected alternatives (shell out to the
   tool; keep per-adapter private guessing).
 - `docs/05_INGESTION_LEDGER.md` — regenerate §1.
-- `docs/specs/CHATVAULT_SPEC_v1.3_BROWSE_AND_EXPORT.md` — correct §4's profile contract to document
+- `docs/prompts/spec-chain/CHATVAULT_SPEC_v1.3_BROWSE_AND_EXPORT.md` — correct §4's profile contract to document
   role filtering as a first-class axis alongside block types and tool budgets.
