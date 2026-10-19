@@ -732,6 +732,9 @@ def _render_ingest_report(summary, path: Path, *, dry_run: bool, verbose: bool, 
     for f in summary.files:
         if f.error:
             console.print(f"[red]{display_mod.relative_display_path(f.path, path_root)}: {f.error}[/red]")
+    for f in summary.files:
+        for w in f.warnings:
+            console.print(f"[yellow]{display_mod.relative_display_path(f.path, path_root)}: {w}[/yellow]")
 
     if totals["flagged"]:
         console.print("[yellow]Some conversations were flagged as ambiguous duplicates — see `chatvault dedupe --report`.[/yellow]")

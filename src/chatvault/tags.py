@@ -374,6 +374,53 @@ def flag_shape_unclear(conn: sqlite3.Connection, conv_ids: list[int]) -> int:
     return applied
 
 
+def flag_timestamp_unparsed(conn: sqlite3.Connection, conv_ids: list[int]) -> int:
+    """Applies review/timestamp-unparsed to every conversation among
+    `conv_ids` with at least one message whose raw_json carries the
+    adapter's `timestamp_unparsed` marker.
+
+    The marker, not `created_at IS NULL`, is the signal: plenty of sources
+    legitimately carry no timestamp at all (10%+ of messages), so a null
+    check would flag honest data. An adapter sets the marker only when a
+    timestamp was present in the source but failed to parse — currently
+    gemini_takeout's HTML variant, which degrades the message to
+    created_at=None and counts it in parse_stats rather than failing the
+    file (a new export format must be loud, never fatal). Same post-load
+    shape as flag_shape_unclear(): adapters flag, this pass tags."""
+    if not conv_ids:
+        return 0
+    placeholders = ",".join("?" * len(conv_ids))
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT c.id
+        FROM conversations c
+        JOIN messages m ON m.conv_id = c.id
+        WHERE json_extract(m.raw_json, '$.timestamp_unparsed') = 1
+          AND c.id IN ({placeholders})
+        """,  # noqa: S608
+        conv_ids,
+    ).fetchall()
+    if not rows:
+        return 0
+
+    tag_id = _get_or_create_tag(conn, "review/timestamp-unparsed")
+    now = _now()
+    applied = 0
+    for row in rows:
+        cur = conn.execute(
+            """
+            INSERT INTO tag_links (tag_id, target_type, target_id, source, created_at)
+            VALUES (?, 'conversation', ?, 'rule', ?)
+            ON CONFLICT(tag_id, target_type, target_id) DO NOTHING
+            """,
+            (tag_id, row["id"], now),
+        )
+        if cur.rowcount:
+            applied += 1
+    conn.commit()
+    return applied
+
+
 # ─────────────── tag import-tree from YAML (Tagging Workflow §2, §8 item 1) ───────────────
 
 

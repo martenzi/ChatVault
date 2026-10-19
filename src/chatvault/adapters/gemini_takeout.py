@@ -16,6 +16,16 @@ from chatvault.adapters.base import make_attachment, make_block, make_conversati
 platform = "gemini"
 name = "gemini_takeout"
 
+# Per-file parse diagnostics, reset at the start of each parse() call and
+# read by ingest afterwards (see ingest.py's _adapter_parse_warnings). A
+# timestamp is metadata, not content: an unparseable one degrades the
+# message to created_at=None and flags the conversation
+# review/timestamp-unparsed rather than failing the whole file — format
+# drift in these exports is ongoing (the same account changed timestamp
+# shape between the Sep-30 and Oct-16 2026 exports), so a loud counter plus
+# a review tag beats a fatal ValueError that loses every conversation.
+parse_stats: dict = {"timestamps_unparsed": 0, "unknown_timezones": {}}
+
 # Corrected 2026-08-12 after a prior conclusion in this project (twice
 # reached, twice wrong) that this export held no real conversation
 # content. It does. Verified by full-file measurement, not sampling:
@@ -214,10 +224,22 @@ _PAYLOAD_RE = re.compile(
     r'<div class="content-cell mdl-cell mdl-cell--6-col mdl-typography--body-1 mdl-typography--text-right">',
     re.DOTALL,
 )
-# "Sep 16, 2026, 7:08:02 PM CEST" — U+202F narrow nbsp appears before AM/PM.
+# Two timestamp shapes observed across real exports, both always
+# <br>-delimited on their own line (verified: every cell in every export —
+# 32/32, 72/72, 121/121, 1901/1901 month-first cells and 1904/1904
+# day-first cells in the Oct-16 h1 export). The <br> anchors also keep the
+# regex from matching date strings quoted inside prompt/response prose
+# (e.g. "the time (Friday, July 26, 2025, 1:56:37 AM CEST)" in h1-oct16).
+#   'Sep 16, 2026, 7:08:02<nbsp>PM CEST'   month-first, 12h — pre-Oct-16 exports
+#   'Sep 16, 2026, 7:08:02 CEST'           month-first, 24h variant
+#   '16 Oct 2026, 16:34:52 CEST'           day-first, 24h — Oct-16 h1 export
+_MONTHS = r"Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec"
 _TS_RE = re.compile(
-    r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2}, 20\d\d,"
-    r" \d{1,2}:\d{2}:\d{2}[\s\u202f]+(?:AM|PM) [A-Z]{2,5}"
+    r"<br>\s*("
+    rf"(?:{_MONTHS})[a-z]* \d{{1,2}}, 20\d\d, \d{{1,2}}:\d{{2}}:\d{{2}}[\s\u202f]+(?:AM|PM)[\s\u202f]+[A-Z]{{2,5}}"
+    rf"|(?:{_MONTHS})[a-z]* \d{{1,2}}, 20\d\d, \d{{1,2}}:\d{{2}}:\d{{2}}[\s\u202f]+[A-Z]{{2,5}}"
+    rf"|\d{{1,2}} (?:{_MONTHS})[a-z]* 20\d\d, \d{{1,2}}:\d{{2}}:\d{{2}}[\s\u202f]+[A-Z]{{2,5}}"
+    r")\s*<br>"
 )
 _ATT_LINK_RE = re.compile(r'<a href="([^"]+)">([^<]*)</a>')
 _TZ_OFFSETS = {"UTC": 0, "GMT": 0, "CET": 1, "CEST": 2}
@@ -233,7 +255,31 @@ def _parse_html_timestamp(raw_ts: str) -> str:
     ts_part, tz_abbr = cleaned, "UTC"
     if m:
         ts_part, tz_abbr = m.group(1), m.group(2)
-    dt = datetime.strptime(ts_part, "%b %d, %Y, %I:%M:%S %p")
+    # 'Sept' (4-letter) observed 294x in the Oct-16 h1 export's real cells;
+    # %b only accepts 'Sep'.
+    ts_part = re.sub(r"\bSept\b", "Sep", ts_part)
+    dt = None
+    for fmt in (
+        "%b %d, %Y, %I:%M:%S %p",  # 'Sep 16, 2026, 7:08:02 PM'
+        "%d %b %Y, %H:%M:%S",      # '16 Oct 2026, 16:34:52' (Oct-16 h1 export, day-first/24h)
+        "%B %d, %Y, %I:%M:%S %p",  # full-month-name variants ('July 26, 2025, 1:56:37 AM'
+        "%d %B %Y, %H:%M:%S",      #  seen quoted in prose; real cells observed abbreviated so far)
+        "%b %d, %Y, %H:%M:%S",     # 'Sep 16, 2026, 19:08:02' (24h month-first)
+        "%B %d, %Y, %H:%M:%S",
+    ):
+        try:
+            dt = datetime.strptime(ts_part, fmt)
+            break
+        except ValueError:
+            continue
+    if dt is None:
+        raise ValueError(f"unparseable Gemini HTML timestamp: {raw_ts!r}")
+    if tz_abbr not in _TZ_OFFSETS:
+        # Treated as UTC (was already the silent fallback); now also counted
+        # so a zone we don't know surfaces in the ingest report instead of
+        # silently writing a timestamp wrong by hours.
+        unknown = parse_stats["unknown_timezones"]
+        unknown[tz_abbr] = unknown.get(tz_abbr, 0) + 1
     offset = _TZ_OFFSETS.get(tz_abbr, 0)
     dt = dt.replace(tzinfo=timezone(timedelta(hours=offset))).astimezone(timezone.utc)
     return dt.isoformat().replace("+00:00", "Z")
@@ -248,10 +294,24 @@ def _parse_html_cell(cell: str) -> dict | None:
     payload = m.group(1)
 
     ts_m = _TS_RE.search(payload)
-    time_ = _parse_html_timestamp(ts_m.group(0)) if ts_m else None
+    time_ = None
+    timestamp_unparsed = False
+    if ts_m:
+        try:
+            time_ = _parse_html_timestamp(ts_m.group(1))
+        except ValueError:
+            # Timestamp is metadata, not content: degrade to created_at=None,
+            # mark the record so the ingest flag pass can tag the
+            # conversation review/timestamp-unparsed, and keep going — one
+            # new format must not drop every conversation in the file.
+            parse_stats["timestamps_unparsed"] += 1
+            timestamp_unparsed = True
 
+    # group(1) is the timestamp itself; ts_m.start()/<br>-aware bounds keep
+    # the delimiter out of prompt_zone while response_html keeps its leading
+    # <br> exactly as before the <br>-anchoring change.
     prompt_zone = payload[: ts_m.start()] if ts_m else payload
-    response_html = payload[ts_m.end() :] if ts_m else ""
+    response_html = payload[ts_m.end(1) :] if ts_m else ""
 
     prompt_zone = prompt_zone.lstrip()
 
@@ -289,6 +349,7 @@ def _parse_html_cell(cell: str) -> dict | None:
         "time": time_,
         "attachments": attachments,  # (stored_filename, display_name)
         "response_html": response_html,
+        "timestamp_unparsed": timestamp_unparsed,
         "raw_cell": cell,
     }
 
@@ -296,6 +357,10 @@ def _parse_html_cell(cell: str) -> dict | None:
 def _html_turn_messages(rec: dict, msg_idx: int) -> list[dict]:
     """Mirror of _turn_messages for the HTML record shape."""
     messages = []
+    # Marker the post-load flag pass (tags.flag_timestamp_unparsed) keys on:
+    # lands in messages.raw_json so a failed timestamp parse stays
+    # identifiable long after ingest.
+    msg_raw = {"timestamp_unparsed": True} if rec.get("timestamp_unparsed") else {}
     if rec["is_prompt"] and rec["title"]:
         blocks = [make_block(0, "text", rec["title"], raw={"title": f"{rec['verb']} {rec['title']}"})]
         for stored, display in rec["attachments"]:
@@ -315,13 +380,13 @@ def _html_turn_messages(rec: dict, msg_idx: int) -> list[dict]:
                     ),
                 )
             )
-        messages.append(make_message(msg_idx, "user", None, rec["time"], blocks, raw={"html_cell": True}))
+        messages.append(make_message(msg_idx, "user", None, rec["time"], blocks, raw={**msg_raw, "html_cell": True}))
         msg_idx += 1
 
     text = html_to_text(rec["response_html"])
     if text:
         blocks = [make_block(0, "text", text, raw={"html": rec["response_html"]})]
-        messages.append(make_message(msg_idx, "assistant", None, rec["time"], blocks, raw={"html_source": "MyActivity.html"}))
+        messages.append(make_message(msg_idx, "assistant", None, rec["time"], blocks, raw={**msg_raw, "html_source": "MyActivity.html"}))
         msg_idx += 1
     return messages
 
@@ -371,7 +436,18 @@ def _parse_html(path: Path) -> Iterator[dict]:
         title = r["title"] or "(untitled Gemini event)"
         native_id = "event:" + hashlib.sha1(f"{title}|{r['time']}".encode("utf-8")).hexdigest()[:16]
         blocks = [make_block(0, "system", title, raw=r["raw_cell"])]
-        message = make_message(0, "system", None, r["time"], blocks, raw={"html_cell": True, "event_only": True})
+        message = make_message(
+            0,
+            "system",
+            None,
+            r["time"],
+            blocks,
+            raw={
+                **({"timestamp_unparsed": True} if r.get("timestamp_unparsed") else {}),
+                "html_cell": True,
+                "event_only": True,
+            },
+        )
         yield make_conversation(
             platform=platform,
             native_id=native_id,
@@ -386,6 +462,10 @@ def _parse_html(path: Path) -> Iterator[dict]:
 
 
 def parse(path: Path) -> Iterator[dict]:
+    # Runs on first next(), before any cell is parsed — ingest reads these
+    # after the generator is exhausted.
+    parse_stats["timestamps_unparsed"] = 0
+    parse_stats["unknown_timezones"] = {}
     if path.suffix.lower() == ".html":
         yield from _parse_html(path)
         return

@@ -52,6 +52,7 @@ class FileIngestResult:
     reprocessed: int = 0
     flagged: int = 0
     error: str | None = None
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -75,6 +76,34 @@ class IngestSummary:
 # above this folder skip it; an explicit `chatvault ingest raw/_ingested/...`
 # still processes that tree (relative parts then have no leading `_ingested`).
 _INGESTED_ARCHIVE_DIR = "_ingested"
+
+
+def _adapter_parse_warnings(mod) -> list[str]:
+    """Harvest an adapter's module-level `parse_stats` dict, if it exposes
+    one, into human-readable warning strings for the ingest report.
+
+    Adapters that tolerate per-record degradation (rather than failing the
+    file) count what they degraded here — e.g. gemini_takeout counts
+    timestamps it could not parse (those messages land created_at=None and
+    their conversations get review/timestamp-unparsed) and timezone
+    abbreviations it treated as UTC. Loud, never fatal: a warning in the
+    report plus a review tag, not a failed file and not a silent wrong
+    value."""
+    stats = getattr(mod, "parse_stats", None)
+    if not stats:
+        return []
+    warnings: list[str] = []
+    unparsed = stats.get("timestamps_unparsed") or 0
+    if unparsed:
+        warnings.append(
+            f"{unparsed} timestamp(s) unparseable — affected messages have created_at=NULL; "
+            "conversations tagged review/timestamp-unparsed"
+        )
+    unknown_tz = stats.get("unknown_timezones") or {}
+    if unknown_tz:
+        detail = ", ".join(f"{abbr}×{n}" for abbr, n in sorted(unknown_tz.items()))
+        warnings.append(f"unknown timezone abbreviation(s) treated as UTC: {detail}")
+    return warnings
 
 
 def _under_ingested_archive(p: Path, walk_root: Path) -> bool:
@@ -328,15 +357,20 @@ def ingest_path(
         if dry_run:
             try:
                 convs = list(mod.parse(file_path))
-                result = FileIngestResult(file_path, "ok", adapter=mod.name, inserted=len(convs))
+                result = FileIngestResult(
+                    file_path, "ok", adapter=mod.name, inserted=len(convs),
+                    warnings=_adapter_parse_warnings(mod),
+                )
             except Exception as exc:  # noqa: BLE001
                 result = FileIngestResult(file_path, "failed", adapter=mod.name, error=str(exc))
             summary.files.append(result)
             continue
 
         now = datetime.now(timezone.utc).isoformat()
+        parse_warnings: list[str] = []
         try:
             convs = list(mod.parse(file_path))
+            parse_warnings = _adapter_parse_warnings(mod)
         except Exception as exc:  # noqa: BLE001
             conn.execute(
                 """
@@ -368,7 +402,7 @@ def ingest_path(
             "SELECT id FROM source_files WHERE sha256 = ? AND adapter = ?", (sha, mod.name)
         ).fetchone()["id"]
 
-        result = FileIngestResult(file_path, "ok", adapter=mod.name)
+        result = FileIngestResult(file_path, "ok", adapter=mod.name, warnings=parse_warnings)
         original_rows = conn.execute(
             "SELECT native_id FROM conversations WHERE source_file_id = ? ORDER BY id", (source_file_id,)
         ).fetchall()
@@ -420,6 +454,7 @@ def ingest_path(
             tags_mod.apply_rules(conn, conv_ids=touched_conv_ids)
             tags_mod.flag_model_unknown(conn, touched_conv_ids)
             tags_mod.flag_shape_unclear(conn, touched_conv_ids)
+            tags_mod.flag_timestamp_unparsed(conn, touched_conv_ids)
 
             if embed:
                 from chatvault import embeddings as embeddings_mod

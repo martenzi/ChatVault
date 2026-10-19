@@ -864,6 +864,84 @@ def test_gemini_takeout_adapter_ingests_and_flags_model_unknown(conn):
     assert {r["id"] for r in tagged} == {c["id"] for c in convs}
 
 
+def test_gemini_html_month_first_12h_timestamp(conn):
+    """Pre-Oct-16 export shape: 'Sep 16, 2026, 7:08:02 PM CEST'."""
+    path = FIXTURES / "gemini_takeout" / "MyActivity-month-first.html"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 1
+
+    msg = conn.execute("SELECT created_at FROM messages WHERE role = 'assistant'").fetchone()
+    assert msg["created_at"] == "2026-09-16T17:08:02Z"  # CEST = UTC+2
+
+
+def test_gemini_html_day_first_24h_with_sept_abbrev(conn):
+    """Oct-16 export shape: '5 Sept 2026, 09:12:30 CEST' — day-first, 24h,
+    and 'Sept' as a four-letter month token (observed 294x in the real
+    file). %b only accepts 'Sep', so the parser normalises it."""
+    path = FIXTURES / "gemini_takeout" / "MyActivity-day-first-sept.html"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 1
+
+    msg = conn.execute("SELECT created_at FROM messages WHERE role = 'assistant'").fetchone()
+    assert msg["created_at"] == "2026-09-05T07:12:30Z"
+
+
+def test_gemini_html_quoted_date_in_prompt_is_not_the_timestamp(conn):
+    """Regression: the cell's real timestamp is <br>-delimited; a date string
+    inside prompt prose must never be parsed as the record's timestamp (a
+    date quoted in a real Oct-16 response crashed the original parser)."""
+    path = FIXTURES / "gemini_takeout" / "MyActivity-quoted-date.html"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 1
+
+    user = conn.execute("SELECT created_at FROM messages WHERE role = 'user'").fetchone()
+    assert user["created_at"] == "2026-10-16T14:34:52Z"  # the real cell ts
+
+    prompt = conn.execute(
+        "SELECT text FROM blocks b JOIN messages m ON m.id = b.msg_id WHERE m.role = 'user'"
+    ).fetchone()
+    assert "July 26, 2025" in prompt["text"]  # quoted date survives as content
+
+
+def test_gemini_html_unparseable_timestamp_degrades_and_flags(conn):
+    """B2a contract: an unparseable cell timestamp must not fail the file —
+    the conversation ingests with created_at=NULL, the file's ingest result
+    carries a warning, and the conversation is tagged
+    review/timestamp-unparsed for a human."""
+    path = FIXTURES / "gemini_takeout" / "MyActivity-bad-ts.html"
+    summary = ingest.ingest_path(conn, path)
+    assert summary.totals["inserted"] == 1
+    assert summary.files[0].status == "ok"
+    assert any("timestamp(s) unparseable" in w for w in summary.files[0].warnings)
+
+    conv = conn.execute("SELECT id, started_at FROM conversations").fetchone()
+    assert conv["started_at"] is None
+    msg = conn.execute("SELECT created_at, raw_json FROM messages").fetchone()
+    assert msg["created_at"] is None
+
+    tagged = conn.execute(
+        """
+        SELECT c.id FROM conversations c
+        JOIN tag_links tl ON tl.target_type = 'conversation' AND tl.target_id = c.id
+        JOIN tags t ON t.id = tl.tag_id
+        WHERE t.name = 'review/timestamp-unparsed'
+        """
+    ).fetchall()
+    assert {r["id"] for r in tagged} == {conv["id"]}
+
+
+def test_gemini_html_unknown_timezone_counted_and_treated_as_utc():
+    """B2b contract: an unrecognised timezone abbreviation is counted in
+    parse_stats (surfaced as an ingest warning) instead of silently writing
+    a timestamp wrong by hours."""
+    from chatvault.adapters import gemini_takeout
+
+    gemini_takeout.parse_stats["unknown_timezones"] = {}
+    iso = gemini_takeout._parse_html_timestamp("16 Oct 2026, 16:34:52 PST")
+    assert iso == "2026-10-16T16:34:52Z"  # falls back to UTC
+    assert gemini_takeout.parse_stats["unknown_timezones"] == {"PST": 1}
+
+
 def test_grok_mixed_file_ingests_both_conversations_and_projects(conn):
     """Regression test for the ingest.py dispatch bug: detect_projects()
     matching a file used to `continue` past conversation ingestion entirely,

@@ -112,6 +112,7 @@ def write_ingest_log(
                 "flagged",
                 "path",
                 "error",
+                "warnings",
             ]
         ),
     ]
@@ -128,6 +129,7 @@ def write_ingest_log(
                     str(f.flagged),
                     relative_display_path(f.path, root or ingest_path),
                     (f.error or "").replace("\t", " ").replace("\n", " "),
+                    ("; ".join(f.warnings)).replace("\t", " ").replace("\n", " "),
                 ]
             )
         )
