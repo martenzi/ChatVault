@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import json
 import random
 import sqlite3
@@ -36,6 +37,51 @@ class AuditReport:
     run_at: str = ""
 
 
+ACCEPTED_FILE = "audit_accepted.md"
+
+# Check keys used in audit_accepted.md. `match` is an fnmatch pattern against:
+#   unclaimed -> the file path relative to raw/
+#   zero-message, idx-gaps -> the conversation uid
+_ACCEPT_KEYS = {"unclaimed", "zero-message", "idx-gaps"}
+
+
+def load_accepted(config: Config) -> dict[str, list[tuple[str, str]]]:
+    """Parses audit_accepted.md: a markdown table `| check | match | reason |`.
+    A failing audit that nobody can ever make pass trains people to ignore it,
+    so known, understood residue is recorded here with a reason and reported
+    as accepted instead of failing; anything not listed still fails."""
+    path = config.root / ACCEPTED_FILE
+    out: dict[str, list[tuple[str, str]]] = {k: [] for k in _ACCEPT_KEYS}
+    if not path.exists():
+        return out
+    for line in path.read_text().splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 3 or cells[0] not in _ACCEPT_KEYS:
+            continue
+        out[cells[0]].append((cells[1].strip("`"), "|".join(cells[2:]).strip()))
+    return out
+
+
+def _split_accepted(items: list[str], rules: list[tuple[str, str]]) -> tuple[list[str], dict[str, int]]:
+    """(unaccepted items, {reason: accepted count})."""
+    remaining: list[str] = []
+    accepted: dict[str, int] = {}
+    for item in items:
+        for pattern, reason in rules:
+            if fnmatch.fnmatch(item, pattern):
+                accepted[reason] = accepted.get(reason, 0) + 1
+                break
+        else:
+            remaining.append(item)
+    return remaining, accepted
+
+
+def _accepted_note(accepted: dict[str, int]) -> str:
+    if not accepted:
+        return ""
+    return "; accepted per audit_accepted.md: " + "; ".join(f"{n} — {reason}" for reason, n in accepted.items())
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -49,6 +95,7 @@ def _pct(numerator: int, denominator: int) -> float:
 
 def _check_ingest_completeness(conn: sqlite3.Connection, config: Config, raw_dir: Path) -> list[CheckResult]:
     results = []
+    accepted_rules = load_accepted(config)
 
     failed_n = conn.execute("SELECT COUNT(*) FROM source_files WHERE status = 'failed'").fetchone()[0]
     results.append(
@@ -59,14 +106,24 @@ def _check_ingest_completeness(conn: sqlite3.Connection, config: Config, raw_dir
         )
     )
 
-    unclaimed_paths = sources.unclaimed(conn, raw_dir, ignore_dir=config.root / "raw_exclusions")
+    all_unclaimed = sources.unclaimed(conn, raw_dir, ignore_dir=config.root / "raw_exclusions")
+
+    def _rel(p: Path) -> str:
+        try:
+            return str(p.relative_to(raw_dir))
+        except ValueError:
+            return str(p)
+
+    rel_remaining, accepted = _split_accepted([_rel(p) for p in all_unclaimed], accepted_rules["unclaimed"])
+    unclaimed_paths = [raw_dir / r for r in rel_remaining]
     results.append(
         CheckResult(
             "A", "no unclaimed files",
             "pass" if not unclaimed_paths else "fail",
             f"{len(unclaimed_paths)} file(s) on disk under {raw_dir} not in source_files"
-            + (f": {', '.join(str(p) for p in unclaimed_paths[:5])}" + (" ..." if len(unclaimed_paths) > 5 else "") if unclaimed_paths else ""),
-            data={"paths": [str(p) for p in unclaimed_paths]},
+            + (f": {', '.join(str(p) for p in unclaimed_paths[:5])}" + (" ..." if len(unclaimed_paths) > 5 else "") if unclaimed_paths else "")
+            + _accepted_note(accepted),
+            data={"paths": [str(p) for p in unclaimed_paths], "accepted": accepted},
         )
     )
 
@@ -89,8 +146,9 @@ def _check_ingest_completeness(conn: sqlite3.Connection, config: Config, raw_dir
 # ─────────────── B. structural integrity ───────────────
 
 
-def _check_structural_integrity(conn: sqlite3.Connection) -> list[CheckResult]:
+def _check_structural_integrity(conn: sqlite3.Connection, config: Config) -> list[CheckResult]:
     results = []
+    accepted_rules = load_accepted(config)
 
     orphan_msgs = conn.execute(
         "SELECT COUNT(*) FROM messages m LEFT JOIN conversations c ON c.id = m.conv_id WHERE c.id IS NULL"
@@ -102,8 +160,9 @@ def _check_structural_integrity(conn: sqlite3.Connection) -> list[CheckResult]:
     ).fetchone()[0]
     results.append(CheckResult("B", "no orphan blocks", "pass" if orphan_blocks == 0 else "fail", f"{orphan_blocks} orphan block row(s)"))
 
-    zero_msg_convs = conn.execute("SELECT COUNT(*) FROM conversations WHERE message_count = 0").fetchone()[0]
-    results.append(CheckResult("B", "no zero-message conversations", "pass" if zero_msg_convs == 0 else "fail", f"{zero_msg_convs} conversation(s) with message_count=0"))
+    zero_uids = [r[0] for r in conn.execute("SELECT uid FROM conversations WHERE message_count = 0").fetchall()]
+    zero_left, zero_acc = _split_accepted(zero_uids, accepted_rules["zero-message"])
+    results.append(CheckResult("B", "no zero-message conversations", "pass" if not zero_left else "fail", f"{len(zero_left)} conversation(s) with message_count=0" + _accepted_note(zero_acc)))
 
     zero_block_msgs = conn.execute(
         "SELECT COUNT(*) FROM messages m LEFT JOIN blocks b ON b.msg_id = m.id WHERE b.id IS NULL"
@@ -112,13 +171,14 @@ def _check_structural_integrity(conn: sqlite3.Connection) -> list[CheckResult]:
 
     idx_gaps = conn.execute(
         """
-        SELECT conv_id FROM (
+        SELECT uid FROM conversations WHERE id IN (SELECT conv_id FROM (
           SELECT conv_id, COUNT(*) n, MIN(idx) mn, MAX(idx) mx, SUM(idx) s
           FROM messages GROUP BY conv_id
-        ) WHERE NOT (mn = 0 AND mx = n - 1 AND s = n * (n - 1) / 2)
+        ) WHERE NOT (mn = 0 AND mx = n - 1 AND s = n * (n - 1) / 2))
         """
     ).fetchall()
-    results.append(CheckResult("B", "message idx contiguous per conversation", "pass" if not idx_gaps else "fail", f"{len(idx_gaps)} conversation(s) with idx gaps/dupes"))
+    gap_left, gap_acc = _split_accepted([r[0] for r in idx_gaps], accepted_rules["idx-gaps"])
+    results.append(CheckResult("B", "message idx contiguous per conversation", "pass" if not gap_left else "fail", f"{len(gap_left)} conversation(s) with idx gaps/dupes" + _accepted_note(gap_acc)))
 
     # deliberate base-table count: FTS index integrity, not a user-facing
     # figure, and it must span every row (including excluded/superseded) to
@@ -391,7 +451,7 @@ def run(
     raw_dir = raw_dir or config.raw_dir
     results: list[CheckResult] = []
     results += _check_ingest_completeness(conn, config, raw_dir)
-    results += _check_structural_integrity(conn)
+    results += _check_structural_integrity(conn, config)
     results += _check_metadata_coverage(conn, platform)
     results += _check_content_coverage(conn, platform)
     results += _check_dedupe_health(conn)

@@ -11,7 +11,7 @@ from pathlib import Path
 # (not just in the migration) so callers that haven't re-ingested a newly
 # supported platform yet (e.g. gemini/deepseek before their first ingest)
 # still see it listed correctly by --stale once source_files rows exist.
-SERVER_SIDE_PLATFORMS = {"claude_desktop", "chatgpt", "grok", "gemini", "deepseek"}
+SERVER_SIDE_PLATFORMS = {"claude_desktop", "chatgpt", "grok", "gemini", "deepseek", "google_ai_mode", "notebooklm"}
 
 _SECTION_1_RE = re.compile(
     r"## 1\. What's ingested\n.*?(?=\n## 2\.)", re.DOTALL

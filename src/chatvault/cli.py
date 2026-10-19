@@ -463,11 +463,18 @@ def ingest(
     reprocess: bool = typer.Option(False, "--reprocess", help="Bypass the file-level dedup and re-parse already-seen files. Existing conversations still resolve as noop by content_hash — this is for backfilling metadata an adapter fix now extracts (e.g. attachments) without ever duplicating rows."),
     embed: bool = typer.Option(True, "--embed/--no-embed", help="Embed newly inserted/superseded conversations for semantic search (spec: 'incrementally on new ingests'). Best-effort — an unreachable Ollama server is reported, not fatal."),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Include skipped_dup rows in the terminal table (full list always goes to the ingest log)."),
+    live: bool = typer.Option(False, "--live", help="Ingest every registered live root (source_files.kind='live') in one pass. Prints per-root staleness first and aborts, ingesting nothing, if any registered root has vanished."),
 ) -> None:
     """Ingest RAW export file(s) into SQLite. Idempotent — safe to re-run.
     Prints a status summary plus a short detail table (skips collapsing
     skipped_dup unless --verbose); full per-file report goes to logs/."""
     config = load_config()
+    if live:
+        if path is not None:
+            console.print("[red]--live takes no path; it ingests the registered live roots[/red]")
+            raise typer.Exit(code=1)
+        _ingest_live(config, adapter=adapter, dry_run=dry_run, reprocess=reprocess, embed=embed, verbose=verbose)
+        return
     path = path or config.raw_dir
     if not path.exists():
         console.print(f"[red]{path} does not exist[/red]")
@@ -484,6 +491,47 @@ def ingest(
         conn.close()
 
     _render_ingest_report(summary, path, dry_run=dry_run, verbose=verbose, logs_dir=config.logs_dir)
+
+
+def _ingest_live(config, *, adapter, dry_run, reprocess, embed, verbose) -> None:
+    from datetime import datetime, timezone
+
+    conn = connect(config)
+    try:
+        statuses = [sources_mod.live_root_status(conn, r) for r in sources_mod.live_roots(conn)]
+        if not statuses:
+            console.print("[red]no live roots registered (source_files.kind='live') — see `chatvault sources mark`[/red]")
+            raise typer.Exit(code=1)
+        now = datetime.now(timezone.utc).timestamp()
+        table = Table(title="live roots")
+        for col in ("root", "files", "last ingested", "newest on disk", "state"):
+            table.add_column(col, overflow="fold")
+        for st in statuses:
+            def _age(ts: float | None) -> str:
+                return "—" if ts is None else f"{(now - ts) / 86400:.1f}d ago"
+            seen = (
+                _age(datetime.fromisoformat(st.last_seen_at).timestamp()) if st.last_seen_at else "—"
+            )
+            disk = _age(st.newest_on_disk)
+            table.add_row(st.root, str(st.files), seen, disk, "[green]ok[/green]" if st.exists else "[red]MISSING[/red]")
+        console.print(table)
+        missing = [st.root for st in statuses if not st.exists]
+        if missing:
+            console.print(f"[red]{len(missing)} registered live root(s) no longer exist — nothing ingested:[/red]")
+            for m in missing:
+                console.print(f"[red]  {m}[/red]")
+            console.print("[dim]Restore the path, or retire it deliberately: `chatvault reconcile --retire <root> --reason ...`[/dim]")
+            raise typer.Exit(code=1)
+        for st in statuses:
+            console.print(f"[bold]ingesting {st.root}[/bold]")
+            try:
+                summary = ingest_mod.ingest_path(conn, Path(st.root), adapter_name=adapter, dry_run=dry_run, config=config, reprocess=reprocess, embed=embed)
+            except ValueError as exc:
+                console.print(f"[red]{exc}[/red]")
+                raise typer.Exit(code=1)
+            _render_ingest_report(summary, Path(st.root), dry_run=dry_run, verbose=verbose, logs_dir=config.logs_dir)
+    finally:
+        conn.close()
 
 
 @app.command(rich_help_panel="Getting Data In")
@@ -2295,6 +2343,7 @@ def screen() -> None:
 def embed(
     force: bool = typer.Option(False, "--force", help="Re-embed even conversations whose text hasn't changed."),
     status: bool = typer.Option(False, "--status", help="Show embedded/pending counts without embedding anything."),
+    rescan: bool = typer.Option(False, "--rescan", help="Also re-check the text hash of every embedded conversation and re-embed changed ones."),
 ) -> None:
     """Backfill semantic-search embeddings over the corpus (spec: 'runs once
     over the full existing corpus, then incrementally on new ingests' — this
@@ -2312,7 +2361,16 @@ def embed(
             console.print(f"[dim]stale (superseded/excluded, safe to ignore): {data['stale']}[/dim]")
             return
 
-        result = embeddings_mod.index_conversations(conn, force=force)
+        if not (force or rescan):
+            pending_ids, unembeddable = embeddings_mod.find_pending(conn)
+            console.print(f"pending: {len(pending_ids)}  unembeddable: {unembeddable}")
+            if not pending_ids:
+                console.print("nothing to embed")
+                return
+        result = embeddings_mod.index_conversations(
+            conn, force=force, rescan=rescan,
+            progress=lambda done, total: console.print(f"[dim]embedding {done}/{total}[/dim]"),
+        )
     finally:
         conn.close()
 

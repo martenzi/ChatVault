@@ -6,6 +6,7 @@ import sqlite3
 import struct
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -77,9 +78,11 @@ def representative_text(conn: sqlite3.Connection, conv_id: int) -> str:
     title = (conv["title"] if conv else "") or ""
     rows = conn.execute(
         """
-        SELECT b.text FROM v_blocks b
-        JOIN v_messages m ON m.id = b.msg_id
-        WHERE b.conv_id = ? AND b.type = 'text' AND m.role IN ('user', 'assistant')
+        SELECT b.text FROM messages m
+        JOIN blocks b ON b.msg_id = m.id
+        JOIN v_conversations c ON c.id = m.conv_id
+        WHERE m.conv_id = ? AND m.excluded = 0 AND b.excluded = 0
+          AND +b.type = 'text' AND m.role IN ('user', 'assistant')
         ORDER BY m.idx, b.idx
         LIMIT 6
         """,
@@ -97,11 +100,36 @@ class IndexResult:
     unavailable: bool = False
 
 
+def find_pending(conn: sqlite3.Connection) -> tuple[list[int], int]:
+    """(conv_ids to embed, unembeddable count) for live conversations with no
+    embedding_meta row — a set-difference, not a per-conversation walk, so
+    "nothing to do" costs milliseconds. Only the missing set (typically tens
+    of rows) has representative_text computed."""
+    missing = conn.execute(
+        """
+        SELECT v.id FROM v_conversations v
+        LEFT JOIN embedding_meta em ON em.conv_id = v.id
+        WHERE em.conv_id IS NULL
+        """
+    ).fetchall()
+    pending: list[int] = []
+    unembeddable = 0
+    for row in missing:
+        if representative_text(conn, row["id"]):
+            pending.append(row["id"])
+        else:
+            unembeddable += 1
+    return pending, unembeddable
+
+
 def index_conversations(
     conn: sqlite3.Connection,
     conv_ids: list[int] | None = None,
     model: str = MODEL,
     force: bool = False,
+    rescan: bool = False,
+    progress: Callable[[int, int], None] | None = None,
+    progress_every: int = 25,
 ) -> IndexResult:
     """Embeds `conv_ids` (default: every live conversation) that either have
     no embedding yet or whose representative text has changed since the last
@@ -113,13 +141,25 @@ def index_conversations(
     the end — a full-corpus backfill is a slow, interruptible operation
     (roughly a second per conversation against a local Ollama server), and
     losing every already-computed embedding to a Ctrl-C or crash near the
-    end would defeat the point of it being resumable at all."""
+    end would defeat the point of it being resumable at all.
+
+    With no `conv_ids`, only live conversations that have no embedding yet are
+    visited (see find_pending). `force` or `rescan` visit every live
+    conversation instead; `rescan` re-checks each text hash and re-embeds
+    only the ones that changed. `progress(done, total)` is called every
+    `progress_every` conversations and at the end."""
     target_ids = conv_ids
     if target_ids is None:
-        target_ids = [r[0] for r in conn.execute("SELECT id FROM v_conversations").fetchall()]
+        if force or rescan:
+            target_ids = [r[0] for r in conn.execute("SELECT id FROM v_conversations").fetchall()]
+        else:
+            target_ids = find_pending(conn)[0]
 
     result = IndexResult()
-    for conv_id in target_ids:
+    total = len(target_ids)
+    for n, conv_id in enumerate(target_ids, start=1):
+        if progress is not None and n % progress_every == 0:
+            progress(n, total)
         text = representative_text(conn, conv_id)
         if not text:
             result.skipped += 1
@@ -156,6 +196,8 @@ def index_conversations(
         result.embedded += 1
 
     conn.commit()
+    if progress is not None and total:
+        progress(total, total)
     return result
 
 
@@ -173,20 +215,8 @@ def status(conn: sqlite3.Connection) -> dict:
 
     embedded = conn.execute("SELECT COUNT(*) FROM v_embedding_meta").fetchone()[0]
 
-    missing = conn.execute(
-        """
-        SELECT v.id FROM v_conversations v
-        LEFT JOIN embedding_meta em ON em.conv_id = v.id
-        WHERE em.conv_id IS NULL
-        """
-    ).fetchall()
-    pending = 0
-    unembeddable = 0
-    for row in missing:
-        if representative_text(conn, row["id"]):
-            pending += 1
-        else:
-            unembeddable += 1
+    pending_ids, unembeddable = find_pending(conn)
+    pending = len(pending_ids)
 
     stale = conn.execute(
         """

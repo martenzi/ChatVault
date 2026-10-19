@@ -300,7 +300,7 @@ def flag_model_unknown(conn: sqlite3.Connection, conv_ids: list[int]) -> int:
         return 0
     placeholders = ",".join("?" * len(conv_ids))
     rows = conn.execute(
-        f"SELECT id FROM conversations WHERE model_primary IS NULL AND platform = 'gemini' AND id IN ({placeholders})",  # noqa: S608
+        f"SELECT id FROM conversations WHERE model_primary IS NULL AND platform IN ('gemini', 'google_ai_mode', 'notebooklm') AND id IN ({placeholders})",  # noqa: S608
         conv_ids,
     ).fetchall()
     if not rows:
@@ -349,7 +349,8 @@ def flag_shape_unclear(conn: sqlite3.Connection, conv_ids: list[int]) -> int:
         FROM conversations c
         JOIN messages m ON m.conv_id = c.id
         JOIN blocks b ON b.msg_id = m.id
-        WHERE b.type = 'unknown' AND c.id IN ({placeholders})
+        WHERE (b.type = 'unknown' OR json_extract(m.raw_json, '$.shape_unclear') = 1)
+          AND c.id IN ({placeholders})
         """,  # noqa: S608
         conv_ids,
     ).fetchall()

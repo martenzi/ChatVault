@@ -26,8 +26,10 @@ def register_late_adapters() -> None:
         gemini_takeout,
         gemini_workspace,
         generic_jsonl,
+        google_ai_mode,
         grok,
         hermes,
+        notebooklm,
         openclaw,
         vscode_legacy,
         windsurf_legacy,
@@ -88,6 +90,15 @@ def register_late_adapters() -> None:
     # interprets; all decoding happens here at parse time via targeted
     # (non-recursive) field-path reads.
     _REGISTRY.setdefault("antigravity", antigravity)
+    # google_ai_mode: Takeout "My Activity/AI Mode" (header "AI Mode"), a
+    # separate platform from gemini by user decision. Sniffs on the AI Mode
+    # header cell; gemini_takeout needs "Gemini Apps" — verified disjoint
+    # against all 8 real AI Mode files.
+    _REGISTRY.setdefault("google_ai_mode", google_ai_mode)
+    # notebooklm: Takeout NotebookLM "Chat History/Chat Session - <uuid>.html",
+    # a plain-text USER:/MODEL: transcript; sniffs on file name, parent
+    # directory and the leading role tag. Chat sessions only.
+    _REGISTRY.setdefault("notebooklm", notebooklm)
     # Deliberately last: permissive fallback, must not shadow specific adapters.
     _REGISTRY.setdefault("generic_jsonl", generic_jsonl)
 

@@ -90,6 +90,50 @@ def list_sources(conn: sqlite3.Connection, kind: str | None = None) -> list[sqli
     return conn.execute(sql, params).fetchall()  # noqa: S608
 
 
+@dataclass
+class LiveRootStatus:
+    root: str
+    exists: bool
+    files: int
+    last_seen_at: str | None
+    newest_on_disk: float | None  # newest file mtime under the root, epoch seconds
+
+
+def live_roots(conn: sqlite3.Connection) -> list[str]:
+    """Top-level roots among `kind='live'` source_files. root_dir is recorded
+    per containing directory, so nested directories collapse into the
+    shallowest live root above them. Retired-only roots are ignored."""
+    rows = conn.execute(
+        "SELECT DISTINCT root_dir FROM source_files WHERE kind = 'live' AND presence != 'retired'"
+    ).fetchall()
+    dirs = sorted({r["root_dir"] for r in rows if r["root_dir"]})
+    roots: list[str] = []
+    for d in dirs:
+        if not any(d == r or d.startswith(r.rstrip("/") + "/") for r in roots):
+            roots.append(d)
+    return roots
+
+
+def live_root_status(conn: sqlite3.Connection, root: str) -> LiveRootStatus:
+    prefix = root.rstrip("/") + "/"
+    rows = conn.execute(
+        "SELECT root_dir, last_seen_at FROM source_files WHERE kind = 'live' AND presence != 'retired'"
+    ).fetchall()
+    under = [r for r in rows if r["root_dir"] == root or (r["root_dir"] or "").startswith(prefix)]
+    seen = max((r["last_seen_at"] for r in under if r["last_seen_at"]), default=None)
+    p = Path(root)
+    newest = None
+    if p.is_dir():
+        for f in p.rglob("*"):
+            try:
+                if f.is_file():
+                    m = f.stat().st_mtime
+                    newest = m if newest is None or m > newest else newest
+            except OSError:
+                continue
+    return LiveRootStatus(root, p.exists(), len(under), seen, newest)
+
+
 _WHY_ROW_RE = re.compile(r"^\|\s*(?P<path>[^|]+?)\s*\|\s*(?P<reason>[^|]+?)\s*\|\s*$")
 
 
