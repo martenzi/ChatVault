@@ -1631,6 +1631,8 @@ def keyword(
     platform: str = typer.Option(None, "--platform", help="Exact platform name, or a short alias: gpt, claude (matches claude_desktop + claude_code), ds, gem, wind."),
     type_: str = typer.Option(None, "--type", help="Only blocks of this type (text, thinking, tool_use, ...)."),
     limit: int = typer.Option(20, "--limit"),
+    since: str = typer.Option(None, "--since", help="ISO date, inclusive — conversations started on/after."),
+    before: str = typer.Option(None, "--before", help="ISO date, exclusive — conversations started before."),
     include_injected: bool = typer.Option(False, "--include-injected", help="Also match provider-injected context and meta blocks."),
 ) -> None:
     """Raw full-text search over individual blocks, with highlighted snippets.
@@ -1641,7 +1643,8 @@ def keyword(
     conn = connect(config)
     try:
         try:
-            rows = search_mod.search(conn, query, platform=resolved, type_=type_, limit=limit, include_injected=include_injected)
+            totals: dict = {}
+            rows = search_mod.search(conn, query, platform=resolved, type_=type_, limit=limit, include_injected=include_injected, since=since, before=before, totals=totals)
         except sqlite3.OperationalError as exc:
             console.print(f"[red]FTS5 syntax error: {exc}. Quote phrases with double quotes, e.g. \"AI/ML\".[/red]")
             raise typer.Exit(code=1)
@@ -1659,7 +1662,10 @@ def keyword(
     for r in rows:
         table.add_row(r["platform"], r["type"], escape(r["title"] or "Untitled"), escape(" ".join((r["snippet"] or "").split())))
     console.print(table)
-    console.print(f"{len(rows)} blocks (limit {limit})")
+    console.print(
+        f"showing {len(rows)} of {totals['blocks']} matching blocks "
+        f"across {totals['conversations']} conversations (limit {limit})"
+    )
 
 
 @app.command(rich_help_panel="Search & Browse")

@@ -191,3 +191,24 @@ def test_keyword_search_excludes_injected_by_default(conn):
     _load(conn, _cir("inj2", "T", "2026-01-01T00:00:00", [msg]))
     assert search_mod.search(conn, token) == []
     assert len(search_mod.search(conn, token, include_injected=True)) == 1
+
+
+def test_keyword_search_date_filter_and_totals(conn):
+    from chatvault import search as search_mod
+
+    token = "zqxdatetoken"
+    for uid, day in (("d1", "2026-01-01"), ("d2", "2026-02-01"), ("d3", "2026-03-01")):
+        msg = make_message(
+            0, "user", None, f"{day}T00:00:00",
+            [make_block(0, "text", f"hello {token}", raw={})], raw={},
+        )
+        _load(conn, _cir(uid, "T", f"{day}T00:00:00", [msg]))
+
+    totals: dict = {}
+    rows = search_mod.search(conn, token, since="2026-02-01", limit=1, totals=totals)
+    assert len(rows) == 1
+    assert totals == {"blocks": 2, "conversations": 2}
+
+    totals = {}
+    search_mod.search(conn, token, since="2026-02-01", before="2026-03-01", totals=totals)
+    assert totals == {"blocks": 1, "conversations": 1}

@@ -13,7 +13,12 @@ def search(
     type_: str | None = None,
     limit: int = 20,
     include_injected: bool = False,
+    since: str | None = None,
+    before: str | None = None,
+    totals: dict | None = None,
 ) -> list[sqlite3.Row]:
+    """Block-level FTS. `totals`, if given, is filled with the uncapped
+    `blocks` and `conversations` match counts (ignoring `limit`)."""
     sql = """
         SELECT b.id, b.type, b.tool_name, snippet(blocks_fts, 0, '[', ']', '…', 24) AS snippet, b.text, c.uid, c.title, c.platform
         FROM blocks_fts f
@@ -35,6 +40,21 @@ def search(
         params.append(type_)
     elif not include_injected:
         sql += f" AND b.type NOT IN {HIDDEN_TYPES_SQL}"
+    if since:
+        sql += " AND c.started_at >= ?"
+        params.append(since)
+    if before:
+        sql += " AND c.started_at < ?"
+        params.append(before)
+    if totals is not None:
+        head, _, _ = sql.partition("WHERE blocks_fts MATCH ?")
+        count_sql = (
+            "SELECT COUNT(*), COUNT(DISTINCT c.id) FROM blocks_fts f "
+            "JOIN v_blocks b ON b.id = f.rowid JOIN v_conversations c ON c.id = b.conv_id "
+            "WHERE blocks_fts MATCH ?" + sql.partition("WHERE blocks_fts MATCH ?")[2]
+        )
+        n_blocks, n_convs = conn.execute(count_sql, params).fetchone()
+        totals["blocks"], totals["conversations"] = n_blocks, n_convs
     sql += " ORDER BY rank LIMIT ?"
     params.append(limit)
     return conn.execute(sql, params).fetchall()
