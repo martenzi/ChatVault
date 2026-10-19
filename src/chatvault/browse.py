@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from chatvault import tags as tags_mod
@@ -42,9 +44,7 @@ def find(*args, **kwargs) -> tuple[list[sqlite3.Row], int]:
     return rows, total
 
 
-def find_with_hidden(
-    conn: sqlite3.Connection,
-    query: str | None = None,
+def _filter_clauses(
     platform: str | tuple[str, ...] | None = None,
     since: str | None = None,
     before: str | None = None,
@@ -52,17 +52,8 @@ def find_with_hidden(
     tag: str | None = None,
     has_attachments: bool = False,
     untagged: bool = False,
-    limit: int = 20,
-    sort: str = "recent",
-    include_injected: bool = False,
-) -> tuple[list[sqlite3.Row], int, int]:
-    """Human-facing lister. No query = most recent first. With a query, titles
-    match first, body text (FTS) second — returns (rows limited to `limit`,
-    total match count, hidden count). Hidden = conversations matched only via
-    injected_context/meta blocks and suppressed (always 0 with include_injected)."""
-    if sort not in _SORT_COLUMNS:
-        raise ValueError(f"sort must be one of {sorted(_SORT_COLUMNS)}, got {sort!r}")
-
+) -> tuple[list[str], list]:
+    """WHERE fragments (over `v_conversations c`) shared by find and latest."""
     clauses = ["1=1"]
     params: list = []
     if platform:
@@ -97,6 +88,34 @@ def find_with_hidden(
         clauses.append(
             "NOT EXISTS (SELECT 1 FROM tag_links tl WHERE tl.target_type = 'conversation' AND tl.target_id = c.id)"
         )
+    return clauses, params
+
+
+def find_with_hidden(
+    conn: sqlite3.Connection,
+    query: str | None = None,
+    platform: str | tuple[str, ...] | None = None,
+    since: str | None = None,
+    before: str | None = None,
+    project: str | None = None,
+    tag: str | None = None,
+    has_attachments: bool = False,
+    untagged: bool = False,
+    limit: int = 20,
+    sort: str = "recent",
+    include_injected: bool = False,
+) -> tuple[list[sqlite3.Row], int, int]:
+    """Human-facing lister. No query = most recent first. With a query, titles
+    match first, body text (FTS) second — returns (rows limited to `limit`,
+    total match count, hidden count). Hidden = conversations matched only via
+    injected_context/meta blocks and suppressed (always 0 with include_injected)."""
+    if sort not in _SORT_COLUMNS:
+        raise ValueError(f"sort must be one of {sorted(_SORT_COLUMNS)}, got {sort!r}")
+
+    clauses, params = _filter_clauses(
+        platform=platform, since=since, before=before, project=project, tag=tag,
+        has_attachments=has_attachments, untagged=untagged,
+    )
     where_sql = " AND ".join(clauses)
 
     def _fetch(extra_clause: str, extra_params: list) -> list[sqlite3.Row]:
@@ -243,3 +262,104 @@ def resolve_pick(conn: sqlite3.Connection, config: Config, pick: str) -> list[in
             raise ValueError(f"row {n} not in the last results (1-{len(by_row)})")
         conv_ids.append(by_row[n])
     return conv_ids
+
+
+_RELATIVE_RE = re.compile(r"^(\d+)(h|d|w|m|y)$")
+# 'm' = 30 days and 'y' = 365 days: calendar-exact months are not worth a dependency.
+_UNIT = {"h": timedelta(hours=1), "d": timedelta(days=1), "w": timedelta(weeks=1),
+         "m": timedelta(days=30), "y": timedelta(days=365)}
+
+
+def resolve_relative_since(
+    since: str | None = None,
+    last: str | None = None,
+    today: bool = False,
+    week: bool = False,
+    now: datetime | None = None,
+) -> str | None:
+    """Fold --last/--today/--week into the one `since` string the existing
+    --since plumbing takes. More than one of the four is an error — never a
+    silent pick. `--last` is UTC-relative ('7d' = now minus 7 days);
+    `--today` is the local calendar date."""
+    given = [n for n, v in (("--since", since), ("--last", last), ("--today", today), ("--week", week)) if v]
+    if len(given) > 1:
+        raise ValueError(f"{' and '.join(given)} can't be combined — pick one")
+    if since or not given:
+        return since
+    if today:
+        return (now or datetime.now()).date().isoformat()
+    if week:
+        last = "7d"
+    m = _RELATIVE_RE.match(last)
+    if not m:
+        raise ValueError(f"--last must look like 24h, 7d, 2w, 3m or 1y, got {last!r}")
+    n, unit = int(m.group(1)), m.group(2)
+    return ((now or datetime.now(timezone.utc)) - n * _UNIT[unit]).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _require_window_functions() -> None:
+    if sqlite3.sqlite_version_info < (3, 25, 0):
+        raise ValueError(
+            f"--per-platform needs SQLite 3.25+ (window functions); this Python bundles {sqlite3.sqlite_version}"
+        )
+
+
+def latest(
+    conn: sqlite3.Connection,
+    limit: int = 10,
+    per_platform: int | None = None,
+    platform: str | tuple[str, ...] | None = None,
+    since: str | None = None,
+    before: str | None = None,
+    project: str | None = None,
+    tag: str | None = None,
+    by_ingest: bool = False,
+) -> tuple[list[sqlite3.Row], int]:
+    """Recency listing with no text matching. Returns (rows, total matching
+    the filters). Rows carry `days_ago` (whole days from the ordering column
+    to now; NULL when that column is NULL) and `attachment_count`. With
+    `per_platform=N`, the N newest of every platform, ordered platform then
+    newest-first; otherwise the `limit` newest overall."""
+    col = "ingested_at" if by_ingest else "started_at"
+    clauses, params = _filter_clauses(platform=platform, since=since, before=before, project=project, tag=tag)
+    where_sql = " AND ".join(clauses)
+    total = conn.execute(f"SELECT COUNT(*) FROM v_conversations c WHERE {where_sql}", params).fetchone()[0]  # noqa: S608
+    cols = (
+        "c.id, c.uid, c.platform, c.title, c.project, c.started_at, c.ingested_at, c.message_count, "
+        f"CAST(julianday('now') - julianday(c.{col}) AS INTEGER) AS days_ago, "
+        "(SELECT COUNT(*) FROM v_blocks b WHERE b.conv_id = c.id AND b.type = 'attachment') AS attachment_count"
+    )
+    if per_platform is not None:
+        _require_window_functions()
+        sql = f"""
+            SELECT * FROM (
+              SELECT {cols}, ROW_NUMBER() OVER (PARTITION BY c.platform ORDER BY c.{col} DESC, c.id DESC) AS rn
+              FROM v_conversations c WHERE {where_sql}
+            ) WHERE rn <= ? ORDER BY platform, {col} DESC, id DESC
+        """  # noqa: S608
+        rows = conn.execute(sql, params + [per_platform]).fetchall()
+    else:
+        sql = f"SELECT {cols} FROM v_conversations c WHERE {where_sql} ORDER BY c.{col} DESC, c.id DESC LIMIT ?"  # noqa: S608
+        rows = conn.execute(sql, params + [limit]).fetchall()
+    return rows, total
+
+
+def rows_by_ids(conn: sqlite3.Connection, ids: list[int]) -> list[sqlite3.Row]:
+    """Live conversations for `ids`, in the given order (ids that are not live —
+    superseded or excluded — are dropped), with the same columns find shows."""
+    if not ids:
+        return []
+    seen = list(dict.fromkeys(ids))
+    out: dict[int, sqlite3.Row] = {}
+    for i in range(0, len(seen), 500):
+        chunk = seen[i:i + 500]
+        rs = conn.execute(
+            f"""
+            SELECT c.id, c.uid, c.platform, c.title, c.project, c.started_at, c.message_count,
+              (SELECT COUNT(*) FROM v_blocks b WHERE b.conv_id = c.id AND b.type = 'attachment') AS attachment_count
+            FROM v_conversations c WHERE c.id IN ({",".join("?" * len(chunk))})
+            """,  # noqa: S608
+            chunk,
+        ).fetchall()
+        out.update({r["id"]: r for r in rs})
+    return [out[i] for i in seen if i in out]

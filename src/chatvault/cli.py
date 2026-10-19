@@ -797,20 +797,37 @@ def _render_ingest_report(summary, path: Path, *, dry_run: bool, verbose: bool, 
             )
 
 
-def _render_find_table(title: str, rows: list, total: int, *, mode: str | None = None, query: str | None = None) -> None:
+def _render_find_table(
+    title: str, rows: list, total: int, *, mode: str | None = None, query: str | None = None,
+    days: bool = False, group_by_platform: bool = False, footer: str | None = None,
+) -> None:
+    """`days` adds a "days ago" column (rows need `days_ago`); `group_by_platform`
+    inserts a header row whenever the platform changes. Row numbers stay
+    sequential across the whole table either way, so `--pick` is unambiguous."""
     from rich.markup import escape
 
     if mode is not None:
         console.print(f"mode: {mode} · query: {query!r}" if query else f"mode: {mode}")
     table = Table(title=title, expand=False)
-    table.add_column("#", justify="right", no_wrap=True)
-    table.add_column("date", no_wrap=True)
+    # `latest` rows (days=True) keep # and date from being ellipsised on narrow terminals.
+    table.add_column("#", justify="right", no_wrap=True, min_width=len(str(len(rows))) if days else None)
+    table.add_column("date", no_wrap=True, min_width=10 if days else None)
     table.add_column("platform", no_wrap=True)
     table.add_column("project", overflow="ellipsis", no_wrap=True, max_width=display_mod.PROJECT_MAX)
     table.add_column("title", overflow="ellipsis", no_wrap=True, max_width=display_mod.TITLE_MAX)
+    if days:
+        table.add_column("days ago", justify="right", no_wrap=True)
     table.add_column("msgs", justify="right", no_wrap=True)
     table.add_column("📎", justify="right", no_wrap=True)
+    current_platform = None
     for i, r in enumerate(rows, start=1):
+        if group_by_platform and r["platform"] != current_platform:
+            current_platform = r["platform"]
+            n_here = sum(1 for x in rows if x["platform"] == current_platform)
+            if i > 1:
+                table.add_section()
+            table.add_row("", "", f"[bold]{escape(current_platform)}[/bold]", "", f"[dim]{n_here} shown[/dim]",
+                          *([""] if days else []), "", "")
         # semantic_search rows are plain v_conversations rows and don't carry
         # the attachment_count subquery browse.find() adds — degrade to
         # blank rather than KeyError.
@@ -823,19 +840,46 @@ def _render_find_table(title: str, rows: list, total: int, *, mode: str | None =
             r["platform"],
             escape(project),
             escape(title_cell),
+            *([str(r["days_ago"]) if r["days_ago"] is not None else "-"] if days else []),
             str(r["message_count"]),
             str(attachment_count) if attachment_count else "",
         )
     console.print(table)
-    console.print(f"showing {len(rows)} of {total} matches · saved as last query")
+    console.print(footer or f"showing {len(rows)} of {total} matches · saved as last query")
 
 
-@app.command(rich_help_panel="Search & Browse")
+_LAST_HELP = "Relative window: 24h, 7d, 2w, 3m (30d), 1y (365d). Can't be combined with --since."
+_TODAY_HELP = "Only conversations started today (local date). Can't be combined with --since."
+_WEEK_HELP = "Shorthand for --last 7d."
+
+_SEARCH_EPILOG = (
+    "\b\n"
+    "Which search command?\n"
+    "  find      title + body keyword (phrase-quoted)   per conversation   no AI\n"
+    "  latest    no matching: recency and filters only  per conversation   no AI\n"
+    "  keyword   raw FTS5: chat*, a OR b, NEAR, -term   per BLOCK          no AI\n"
+    "  search    meaning (local embeddings)             per conversation   AI"
+)
+
+
+def _resolve_since(since, last, today, week):
+    """since/--last/--today/--week -> the one `since` string, or a red error + exit 1."""
+    try:
+        return browse_mod.resolve_relative_since(since, last, today, week)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+
+
+@app.command(rich_help_panel="Search & Browse", epilog=_SEARCH_EPILOG)
 def find(
     query: str = typer.Argument(None, help="Free text. Titles match first, body text (FTS) second. Omit for most recent."),
     platform: str = typer.Option(None, "--platform", help="Exact platform name, or a short alias: gpt, claude (matches claude_desktop + claude_code), ds, gem, wind."),
     since: str = typer.Option(None, "--since", help="ISO date, inclusive."),
     before: str = typer.Option(None, "--before", help="ISO date, exclusive."),
+    last: str = typer.Option(None, "--last", help=_LAST_HELP),
+    today: bool = typer.Option(False, "--today", help=_TODAY_HELP),
+    week: bool = typer.Option(False, "--week", help=_WEEK_HELP),
     project: str = typer.Option(None, "--project"),
     tag: str = typer.Option(None, "--tag", help="Exact tag name, or a prefix ending in '/**' to match that tag and everything nested under it, e.g. 'tech/macos/**'."),
     has_attachments: bool = typer.Option(False, "--has-attachments"),
@@ -847,7 +891,12 @@ def find(
     """Human-facing lister — find by title/date/platform, not uid. Keyword
     search, conversation-level. For meaning-based search, use `chatvault
     search` instead. Numbers the results and caches them so
-    `export --pick`/`show --pick` can select by row. Prints a table."""
+    `export --pick`/`show --pick` can select by row. Prints a table.
+
+    Run with no query for the most recent conversations (`chatvault latest`
+    is the quicker way). The query is matched as one exact phrase; for
+    `a OR b`, prefix wildcards or NEAR use `chatvault keyword`."""
+    since = _resolve_since(since, last, today, week)
     config = load_config()
     resolved_platform = platforms_mod.resolve_platform_alias(platform) if platform else None
     conn = connect(config)
@@ -876,6 +925,63 @@ def find(
     )
     if hidden:
         console.print(f"[dim]{hidden} matches hidden (injected context only) — use --include-injected to show[/dim]")
+
+
+@app.command(rich_help_panel="Search & Browse", epilog=_SEARCH_EPILOG)
+def latest(
+    n: int = typer.Argument(None, help="How many to show: 10 by default, or 3 per platform with --per-platform."),
+    per_platform: bool = typer.Option(False, "--per-platform", help="Show the N newest of EVERY platform, grouped by platform. `latest --per-platform 5` = 5 each."),
+    platform: str = typer.Option(None, "--platform", help="Exact platform name, or a short alias: gpt, claude (matches claude_desktop + claude_code), ds, gem, wind."),
+    project: str = typer.Option(None, "--project"),
+    tag: str = typer.Option(None, "--tag", help="Exact tag name, or a prefix ending in '/**'."),
+    since: str = typer.Option(None, "--since", help="ISO date, inclusive."),
+    before: str = typer.Option(None, "--before", help="ISO date, exclusive."),
+    last: str = typer.Option(None, "--last", help=_LAST_HELP),
+    today: bool = typer.Option(False, "--today", help=_TODAY_HELP),
+    week: bool = typer.Option(False, "--week", help=_WEEK_HELP),
+    by_ingest: bool = typer.Option(False, "--by-ingest", help="Order by when ChatVault ingested it, not when the conversation started. 'days ago' follows the same column."),
+) -> None:
+    """The most recent conversations — no query, just recency. The "days ago"
+    column is plain fact (days since the conversation started, or since
+    ingest with --by-ingest), so `latest --per-platform 3` doubles as a
+    staleness check. Numbers the results and caches them so `show --pick` /
+    `export --pick` work straight after. Prints a table.
+
+    For a custom quick-access list of your own, see `chatvault view save`."""
+    since = _resolve_since(since, last, today, week)
+    if n is not None and n < 1:
+        console.print("[red]N must be 1 or more[/red]")
+        raise typer.Exit(code=1)
+    per_n = (n or 3) if per_platform else None
+    n = n or 10
+    config = load_config()
+    resolved_platform = platforms_mod.resolve_platform_alias(platform) if platform else None
+    conn = connect(config)
+    try:
+        try:
+            rows, total = browse_mod.latest(
+                conn, limit=n, per_platform=per_n, platform=resolved_platform, since=since,
+                before=before, project=project, tag=tag, by_ingest=by_ingest,
+            )
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
+        browse_mod.save_result_cache(
+            conn, config, rows,
+            {"query": None, "platform": platform, "since": since, "before": before, "project": project,
+             "tag": tag, "limit": n, "per_platform": per_n, "by_ingest": by_ingest, "mode": "latest"},
+        )
+    finally:
+        conn.close()
+
+    grouped = per_n is not None
+    n_platforms = len({r["platform"] for r in rows})
+    title = "latest" + (f" · {per_n} per platform" if grouped else "") + (" · by ingest" if by_ingest else "")
+    footer = (
+        f"showing {len(rows)} from {n_platforms} platforms ({total} match) · saved as last query"
+        if grouped else None
+    )
+    _render_find_table(title, rows, total, days=True, group_by_platform=grouped, footer=footer)
 
 
 def _interactive_pick(conn):
@@ -1406,16 +1512,37 @@ def view_save(
 
 @view_app.command("run")
 def view_run(name: str = typer.Argument(...)) -> None:
-    """Executes a saved view's SQL and prints the raw result rows. Prints a table."""
+    """Runs a saved view. If its SQL returns an `id` column (conversation ids),
+    prints the standard find table and caches it so `show --pick` /
+    `export --pick` work straight after; otherwise prints the raw rows.
+    Prints a table.
+
+    Example: chatvault view save stale --sql "SELECT id FROM v_conversations WHERE started_at < date('now','-30 day')"
+    """
     config = load_config()
     conn = connect(config)
     try:
         rows = curation.view_run(conn, name)
+        if rows and "id" in rows[0].keys():
+            ids = [r["id"] for r in rows]
+            conv_rows = browse_mod.rows_by_ids(conn, ids)
+            browse_mod.save_result_cache(conn, config, conv_rows, {"query": None, "view": name, "mode": "view"})
+        else:
+            conv_rows = None
     finally:
         conn.close()
     if not rows:
         console.print("[dim]no rows[/dim]")
         return
+    if conv_rows is not None:
+        dropped = len(set(ids)) - len(conv_rows)
+        _render_find_table(
+            f"view: {name}", conv_rows, len(conv_rows),
+            footer=f"showing {len(conv_rows)} of {len(conv_rows)} conversations · saved as last query"
+            + (f" · {dropped} id(s) not live (superseded/excluded), skipped" if dropped else ""),
+        )
+        return
+    console.print("[dim]no `id` column — printing raw rows (add `id` to enable --pick)[/dim]")
     table = Table(title=f"view: {name}")
     for col in rows[0].keys():
         table.add_column(col)
@@ -1591,7 +1718,7 @@ def dedupe(
         conn.close()
 
 
-@app.command(rich_help_panel="Search & Browse")
+@app.command(rich_help_panel="Search & Browse", epilog=_SEARCH_EPILOG)
 def search(
     query: str = typer.Argument(...),
     platform: str = typer.Option(None, "--platform", help="Exact platform name, or a short alias: gpt, claude (matches claude_desktop + claude_code), ds, gem, wind."),
@@ -1625,7 +1752,7 @@ def search(
     _render_find_table(f"search: {query!r}", rows, total, mode="semantic", query=query)
 
 
-@app.command(rich_help_panel="Search & Browse")
+@app.command(rich_help_panel="Search & Browse", epilog=_SEARCH_EPILOG)
 def keyword(
     query: str = typer.Argument(..., help="FTS5 expression."),
     platform: str = typer.Option(None, "--platform", help="Exact platform name, or a short alias: gpt, claude (matches claude_desktop + claude_code), ds, gem, wind."),
@@ -1633,11 +1760,15 @@ def keyword(
     limit: int = typer.Option(20, "--limit"),
     since: str = typer.Option(None, "--since", help="ISO date, inclusive — conversations started on/after."),
     before: str = typer.Option(None, "--before", help="ISO date, exclusive — conversations started before."),
+    last: str = typer.Option(None, "--last", help=_LAST_HELP),
+    today: bool = typer.Option(False, "--today", help=_TODAY_HELP),
+    week: bool = typer.Option(False, "--week", help=_WEEK_HELP),
     include_injected: bool = typer.Option(False, "--include-injected", help="Also match provider-injected context and meta blocks."),
 ) -> None:
     """Raw full-text search over individual blocks, with highlighted snippets.
     FTS5 syntax: `chat*`, `a OR b`, `NEAR(a b, 5)`, `-excluded`. Matches
     individual blocks; use `find` for conversations. No AI involved."""
+    since = _resolve_since(since, last, today, week)
     config = load_config()
     resolved = platforms_mod.resolve_platform_alias(platform) if platform else None
     conn = connect(config)
