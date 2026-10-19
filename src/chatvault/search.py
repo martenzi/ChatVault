@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 from chatvault import tags as tags_mod
+from chatvault.browse import HIDDEN_TYPES_SQL
 
 
 def search(
@@ -11,9 +12,10 @@ def search(
     platform: str | tuple[str, ...] | None = None,
     type_: str | None = None,
     limit: int = 20,
+    include_injected: bool = False,
 ) -> list[sqlite3.Row]:
     sql = """
-        SELECT b.id, b.type, b.tool_name, b.text, c.uid, c.title, c.platform
+        SELECT b.id, b.type, b.tool_name, snippet(blocks_fts, 0, '[', ']', '…', 24) AS snippet, b.text, c.uid, c.title, c.platform
         FROM blocks_fts f
         JOIN v_blocks b ON b.id = f.rowid
         JOIN v_conversations c ON c.id = b.conv_id
@@ -31,6 +33,8 @@ def search(
     if type_:
         sql += " AND b.type = ?"
         params.append(type_)
+    elif not include_injected:
+        sql += f" AND b.type NOT IN {HIDDEN_TYPES_SQL}"
     sql += " ORDER BY rank LIMIT ?"
     params.append(limit)
     return conn.execute(sql, params).fetchall()

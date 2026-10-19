@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import pydoc
+import sqlite3
 import sys
 from datetime import date
 from pathlib import Path
@@ -793,6 +794,7 @@ def find(
     untagged: bool = typer.Option(False, "--untagged", help="Only conversations with no tags at all."),
     limit: int = typer.Option(50, "--limit"),
     sort: str = typer.Option("recent", "--sort", help="recent | oldest | longest"),
+    include_injected: bool = typer.Option(False, "--include-injected", help="Also match provider-injected context (memory blocks, date notes) hidden by default."),
 ) -> None:
     """Human-facing lister — find by title/date/platform, not uid. Keyword
     search, conversation-level. For meaning-based search, use `chatvault
@@ -803,9 +805,10 @@ def find(
     conn = connect(config)
     try:
         try:
-            rows, total = browse_mod.find(
+            rows, total, hidden = browse_mod.find_with_hidden(
                 conn, query=query, platform=resolved_platform, since=since, before=before,
                 project=project, tag=tag, has_attachments=has_attachments, untagged=untagged, limit=limit, sort=sort,
+                include_injected=include_injected,
             )
         except ValueError as exc:
             console.print(f"[red]{exc}[/red]")
@@ -823,6 +826,8 @@ def find(
         f"find: {query!r}" if query else "find: most recent", rows, total,
         mode="keyword", query=query,
     )
+    if hidden:
+        console.print(f"[dim]{hidden} matches hidden (injected context only) — use --include-injected to show[/dim]")
 
 
 def _interactive_pick(conn):
@@ -1570,6 +1575,43 @@ def search(
         conn.close()
 
     _render_find_table(f"search: {query!r}", rows, total, mode="semantic", query=query)
+
+
+@app.command(rich_help_panel="Search & Browse")
+def keyword(
+    query: str = typer.Argument(..., help="FTS5 expression."),
+    platform: str = typer.Option(None, "--platform", help="Exact platform name, or a short alias: gpt, claude (matches claude_desktop + claude_code), ds, gem, wind."),
+    type_: str = typer.Option(None, "--type", help="Only blocks of this type (text, thinking, tool_use, ...)."),
+    limit: int = typer.Option(20, "--limit"),
+    include_injected: bool = typer.Option(False, "--include-injected", help="Also match provider-injected context and meta blocks."),
+) -> None:
+    """Raw full-text search over individual blocks, with highlighted snippets.
+    FTS5 syntax: `chat*`, `a OR b`, `NEAR(a b, 5)`, `-excluded`. Matches
+    individual blocks; use `find` for conversations. No AI involved."""
+    config = load_config()
+    resolved = platforms_mod.resolve_platform_alias(platform) if platform else None
+    conn = connect(config)
+    try:
+        try:
+            rows = search_mod.search(conn, query, platform=resolved, type_=type_, limit=limit, include_injected=include_injected)
+        except sqlite3.OperationalError as exc:
+            console.print(f"[red]FTS5 syntax error: {exc}. Quote phrases with double quotes, e.g. \"AI/ML\".[/red]")
+            raise typer.Exit(code=1)
+    finally:
+        conn.close()
+    if not rows:
+        console.print("[dim]no matches[/dim]")
+        return
+    from rich.markup import escape
+    table = Table(title=f"keyword: {query!r}", expand=False)
+    table.add_column("platform", no_wrap=True)
+    table.add_column("type", no_wrap=True)
+    table.add_column("conversation", overflow="ellipsis", max_width=display_mod.TITLE_MAX)
+    table.add_column("snippet")
+    for r in rows:
+        table.add_row(r["platform"], r["type"], escape(r["title"] or "Untitled"), escape(" ".join((r["snippet"] or "").split())))
+    console.print(table)
+    console.print(f"{len(rows)} blocks (limit {limit})")
 
 
 @app.command(rich_help_panel="Search & Browse")

@@ -30,7 +30,19 @@ def _fts_phrase(query: str) -> str:
     return '"' + query.replace('"', '""') + '"'
 
 
-def find(
+# Block types that are provider boilerplate, not user/assistant content.
+# Hidden from search at the query layer (the rows stay indexed).
+HIDDEN_BLOCK_TYPES = ("injected_context", "meta")
+HIDDEN_TYPES_SQL = "(" + ", ".join(f"'{t}'" for t in HIDDEN_BLOCK_TYPES) + ")"
+
+
+def find(*args, **kwargs) -> tuple[list[sqlite3.Row], int]:
+    """See `find_with_hidden`; returns just (rows, total)."""
+    rows, total, _hidden = find_with_hidden(*args, **kwargs)
+    return rows, total
+
+
+def find_with_hidden(
     conn: sqlite3.Connection,
     query: str | None = None,
     platform: str | tuple[str, ...] | None = None,
@@ -42,10 +54,12 @@ def find(
     untagged: bool = False,
     limit: int = 20,
     sort: str = "recent",
-) -> tuple[list[sqlite3.Row], int]:
+    include_injected: bool = False,
+) -> tuple[list[sqlite3.Row], int, int]:
     """Human-facing lister. No query = most recent first. With a query, titles
     match first, body text (FTS) second — returns (rows limited to `limit`,
-    total match count)."""
+    total match count, hidden count). Hidden = conversations matched only via
+    injected_context/meta blocks and suppressed (always 0 with include_injected)."""
     if sort not in _SORT_COLUMNS:
         raise ValueError(f"sort must be one of {sorted(_SORT_COLUMNS)}, got {sort!r}")
 
@@ -95,20 +109,28 @@ def find(
         """  # noqa: S608
         return conn.execute(sql, params + extra_params).fetchall()
 
+    hidden = 0
     if query:
         title_rows = _fetch("AND c.title LIKE ?", [f"%{query}%"])
         title_ids = {r["id"] for r in title_rows}
 
-        body_id_rows = conn.execute(
-            f"""
-            SELECT DISTINCT c.id FROM blocks_fts f
-            JOIN v_blocks b ON b.id = f.rowid
-            JOIN v_conversations c ON c.id = b.conv_id
-            WHERE blocks_fts MATCH ? AND {where_sql}
-            """,  # noqa: S608
-            [_fts_phrase(query)] + params,
-        ).fetchall()
-        body_ids = [r["id"] for r in body_id_rows if r["id"] not in title_ids]
+        def _body_ids(type_filter: str) -> list[int]:
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT c.id FROM blocks_fts f
+                JOIN v_blocks b ON b.id = f.rowid
+                JOIN v_conversations c ON c.id = b.conv_id
+                WHERE blocks_fts MATCH ? AND {where_sql}{type_filter}
+                """,  # noqa: S608
+                [_fts_phrase(query)] + params,
+            ).fetchall()
+            return [r["id"] for r in rows if r["id"] not in title_ids]
+
+        if include_injected:
+            body_ids = _body_ids("")
+        else:
+            body_ids = _body_ids(f" AND b.type NOT IN {HIDDEN_TYPES_SQL}")
+            hidden = len(set(_body_ids("")) - set(body_ids))
 
         body_rows = []
         if body_ids:
@@ -120,7 +142,7 @@ def find(
         all_rows = _fetch("", [])
 
     total = len(all_rows)
-    return all_rows[:limit], total
+    return all_rows[:limit], total, hidden
 
 
 def cache_path(config: Config) -> Path:

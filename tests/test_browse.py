@@ -162,3 +162,32 @@ def test_get_conversations_by_ids_preserves_pick_order(conn):
 
     picked = export.get_conversations_by_ids(conn, [id_two, id_one])
     assert [r["id"] for r in picked] == [id_two, id_one]
+
+
+def test_find_hides_injected_context_unless_included(conn):
+    token = "zqxinjectedtoken"
+    msg = make_message(
+        0, "user", None, "2026-01-01T00:00:00",
+        [make_block(0, "injected_context", f"memory says {token}", raw={})], raw={},
+    )
+    _load(conn, _cir("inj", "Unrelated title", "2026-01-01T00:00:00", [msg]))
+
+    rows, total, hidden = browse.find_with_hidden(conn, query=token)
+    assert total == 0 and hidden == 1
+
+    rows, total, hidden = browse.find_with_hidden(conn, query=token, include_injected=True)
+    assert total == 1 and hidden == 0
+    assert browse.find(conn, query=token)[1] == 0
+
+
+def test_keyword_search_excludes_injected_by_default(conn):
+    from chatvault import search as search_mod
+
+    token = "zqxkeywordtoken"
+    msg = make_message(
+        0, "user", None, "2026-01-01T00:00:00",
+        [make_block(0, "injected_context", f"note {token}", raw={})], raw={},
+    )
+    _load(conn, _cir("inj2", "T", "2026-01-01T00:00:00", [msg]))
+    assert search_mod.search(conn, token) == []
+    assert len(search_mod.search(conn, token, include_injected=True)) == 1
