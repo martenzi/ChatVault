@@ -82,7 +82,8 @@ def _filter_clauses(
         params.extend(tag_params)
     if has_attachments:
         clauses.append(
-            "EXISTS (SELECT 1 FROM v_blocks b WHERE b.conv_id = c.id AND b.type = 'attachment')"
+            # unary + stops the planner choosing the block-type index (a full scan per conversation)
+            "EXISTS (SELECT 1 FROM v_blocks b WHERE b.conv_id = c.id AND +b.type = 'attachment')"
         )
     if untagged:
         clauses.append(
@@ -117,51 +118,54 @@ def find_with_hidden(
         has_attachments=has_attachments, untagged=untagged,
     )
     where_sql = " AND ".join(clauses)
+    order_sql = _SORT_COLUMNS[sort]
 
-    def _fetch(extra_clause: str, extra_params: list) -> list[sqlite3.Row]:
-        sql = f"""
-            SELECT c.*,
-              (SELECT COUNT(*) FROM v_blocks b WHERE b.conv_id = c.id AND b.type = 'attachment') AS attachment_count
-            FROM v_conversations c
-            WHERE {where_sql} {extra_clause}
-            ORDER BY {_SORT_COLUMNS[sort]}
-        """  # noqa: S608
-        return conn.execute(sql, params + extra_params).fetchall()
+    def _ids(extra_clause: str, extra_params: list, cap: int | None = None) -> list[int]:
+        sql = f"SELECT c.id FROM v_conversations c WHERE {where_sql} {extra_clause} ORDER BY {order_sql}"  # noqa: S608
+        if cap is not None:
+            sql += " LIMIT ?"
+            extra_params = extra_params + [cap]
+        return [r["id"] for r in conn.execute(sql, params + extra_params).fetchall()]
 
     hidden = 0
     if query:
-        title_rows = _fetch("AND c.title LIKE ?", [f"%{query}%"])
-        title_ids = {r["id"] for r in title_rows}
+        # Ids only until the page is known: the total is the true size of the
+        # title+body union, but full rows are fetched for the `limit` shown.
+        title_ids = _ids("AND c.title LIKE ?", [f"%{query}%"])
+        title_set = set(title_ids)
 
-        def _body_ids(type_filter: str) -> list[int]:
-            rows = conn.execute(
-                f"""
-                SELECT DISTINCT c.id FROM blocks_fts f
-                JOIN v_blocks b ON b.id = f.rowid
-                JOIN v_conversations c ON c.id = b.conv_id
-                WHERE blocks_fts MATCH ? AND {where_sql}{type_filter}
-                """,  # noqa: S608
-                [_fts_phrase(query)] + params,
-            ).fetchall()
-            return [r["id"] for r in rows if r["id"] not in title_ids]
-
+        # One FTS pass: per conversation, did any matching block fall outside
+        # the hidden types? (vis=0 means matched only via injected/meta.)
+        matched = conn.execute(
+            f"""
+            SELECT c.id AS id, MAX(b.type NOT IN {HIDDEN_TYPES_SQL}) AS vis FROM blocks_fts f
+            JOIN v_blocks b ON b.id = f.rowid
+            JOIN v_conversations c ON c.id = b.conv_id
+            WHERE blocks_fts MATCH ? AND {where_sql}
+            GROUP BY c.id
+            """,  # noqa: S608
+            [_fts_phrase(query)] + params,
+        ).fetchall()
+        matched = [r for r in matched if r["id"] not in title_set]
         if include_injected:
-            body_ids = _body_ids("")
+            body_ids = [r["id"] for r in matched]
         else:
-            body_ids = _body_ids(f" AND b.type NOT IN {HIDDEN_TYPES_SQL}")
-            hidden = len(set(_body_ids("")) - set(body_ids))
+            body_ids = [r["id"] for r in matched if r["vis"]]
+            hidden = len(matched) - len(body_ids)
 
-        body_rows = []
+        body_ordered: list[int] = []
         if body_ids:
             placeholders = ",".join("?" * len(body_ids))
-            body_rows = _fetch(f"AND c.id IN ({placeholders})", body_ids)
+            body_ordered = _ids(f"AND c.id IN ({placeholders})", body_ids)
 
-        all_rows = list(title_rows) + list(body_rows)
+        all_ids = title_ids + body_ordered
+        total = len(all_ids)
+        page_ids = all_ids[:limit]
     else:
-        all_rows = _fetch("", [])
+        total = conn.execute(f"SELECT COUNT(*) FROM v_conversations c WHERE {where_sql}", params).fetchone()[0]  # noqa: S608
+        page_ids = _ids("", [], cap=limit)
 
-    total = len(all_rows)
-    return all_rows[:limit], total, hidden
+    return rows_by_ids(conn, page_ids), total, hidden
 
 
 def cache_path(config: Config) -> Path:

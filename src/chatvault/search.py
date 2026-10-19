@@ -20,7 +20,7 @@ def search(
     """Block-level FTS. `totals`, if given, is filled with the uncapped
     `blocks` and `conversations` match counts (ignoring `limit`)."""
     sql = """
-        SELECT b.id, b.type, b.tool_name, snippet(blocks_fts, 0, '[', ']', '…', 24) AS snippet, b.text, c.uid, c.title, c.platform
+        SELECT b.id, b.conv_id, b.type, b.tool_name, snippet(blocks_fts, 0, '[', ']', '…', 24) AS snippet, b.text, c.uid, c.title, c.platform
         FROM blocks_fts f
         JOIN v_blocks b ON b.id = f.rowid
         JOIN v_conversations c ON c.id = b.conv_id

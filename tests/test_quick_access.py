@@ -99,3 +99,63 @@ def test_date_flag_conflict_errors_on_cli(vault, conn, monkeypatch):
     for cmd in (["find", "x"], ["keyword", "x"], ["latest"]):
         res = _run(vault, monkeypatch, *cmd, "--last", "7d", "--since", "2026-01-01")
         assert res.exit_code == 1 and "can't be combined" in res.output
+
+
+# --- doc 70: find fetches ids first, limits in SQL, counts separately ---
+
+
+def _seed_find(conn):
+    # titles hit "needle" (t1, t2); bodies hit it (b1, b2); one only via injected context (inj)
+    for uid, title, day, btype, text in [
+        ("t1", "needle one", "2020-01-05", "text", "x"),
+        ("t2", "needle two", "2020-01-02", "text", "x"),
+        ("b1", "plain a", "2020-01-04", "text", "has needle inside"),
+        ("b2", "plain b", "2020-01-03", "text", "another needle"),
+        ("inj", "plain c", "2020-01-06", "injected_context", "memory needle"),
+    ]:
+        msg = make_message(0, "user", None, f"{day}T00:00:00", [make_block(0, btype, text, raw={})], raw={})
+        _load(conn, _cir(uid, title, f"{day}T00:00:00", [msg]))
+
+
+def test_find_total_is_union_size_and_limit_applies_after_title_first_ordering(conn):
+    _seed_find(conn)
+    rows, total, hidden = browse.find_with_hidden(conn, query="needle", limit=3)
+    assert total == 4 and hidden == 1
+    # titles first (newest first), then body matches (newest first), cut at 3
+    assert [r["uid"].split(":", 1)[1] for r in rows] == ["t1", "t2", "b1"]
+
+
+def test_find_bare_limit_and_total(conn):
+    _seed_find(conn)
+    rows, total, _ = browse.find_with_hidden(conn, limit=2)
+    assert total == 5 and [r["uid"].split(":", 1)[1] for r in rows] == ["inj", "t1"]
+
+
+def test_find_rows_never_carry_raw_json(conn):
+    _seed_find(conn)
+    rows, _, _ = browse.find_with_hidden(conn, query="needle")
+    assert "raw_json" not in rows[0].keys()
+
+
+def test_browse_lister_never_selects_raw_json():
+    from pathlib import Path
+    src = Path(browse.__file__).read_text()
+    assert "raw_json" not in src and "c.*" not in src
+
+
+def test_keyword_cache_points_each_block_at_its_conversation_without_dedup(vault, conn, monkeypatch):
+    token = "zqxdupetoken"
+    msg = make_message(
+        0, "user", None, "2020-01-01T00:00:00",
+        [make_block(0, "text", f"first {token}", raw={}), make_block(1, "text", f"second {token}", raw={})], raw={},
+    )
+    _load(conn, _cir("one", "One", "2020-01-01T00:00:00", [msg]))
+    msg2 = make_message(0, "user", None, "2020-01-02T00:00:00", [make_block(0, "text", f"third {token}", raw={})], raw={})
+    _load(conn, _cir("two", "Two", "2020-01-02T00:00:00", [msg2]))
+    conn.close()
+    res = _run(vault, monkeypatch, "keyword", token)
+    assert res.exit_code == 0, res.output
+    cache = json.loads(browse.cache_path(vault).read_text())["rows"]
+    assert [r["row"] for r in cache] == [1, 2, 3]
+    ids = [r["conv_id"] for r in cache]
+    assert len(set(ids)) == 2 and sorted(ids.count(i) for i in set(ids)) == [1, 2]

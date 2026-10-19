@@ -175,6 +175,18 @@ See `10_CONCEPTS_label_tag_project.md`.
 
 ---
 
+## D16 — Verify write paths against a scratch vault, never production
+
+**Chosen:** any manual check of a command that writes (`view save`, `tag add`, `stash add`, `note`, `exclude`, `ingest`, …) runs against a scratch vault, selected with one environment variable: `CHATVAULT_ROOT`.
+
+**Rejected:** testing against production and cleaning up afterwards.
+
+**Why:** while testing `view run` (2026-10-19) two saved views were created in the production database. They were noticed, deleted and disclosed, and no harm followed — but nothing prevented it, and the next stray write might not be reversible. Ingest already had this habit (backup, scratch copy, then production); it was never stated for the small CLI write commands.
+
+**How:** see "Scratch vault" in `INDEX.md`.
+
+---
+
 ## Deliberately not decided
 
 Open by choice, not oversight:

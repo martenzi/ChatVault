@@ -1008,7 +1008,10 @@ def _interactive_pick(conn):
     profile = questionary.select("Profile:", choices=["read", "lean", "full"], default="read").ask()
     if profile is None:
         return None
-    return {"row": selected, "profile": profile}
+    # The lister row carries only display columns; export templates read the
+    # full conversation row (model_primary, ended_at, ...).
+    full = export_mod.get_conversations_by_ids(conn, [selected["id"]])
+    return {"row": full[0] if full else selected, "profile": profile}
 
 
 def _parse_platform_spec(spec: str) -> tuple[set[str], set[str]]:
@@ -1767,7 +1770,10 @@ def keyword(
 ) -> None:
     """Raw full-text search over individual blocks, with highlighted snippets.
     FTS5 syntax: `chat*`, `a OR b`, `NEAR(a b, 5)`, `-excluded`. Matches
-    individual blocks; use `find` for conversations. No AI involved."""
+    individual blocks; use `find` for conversations. No AI involved.
+
+    Row numbers are blocks; `--pick`/`show` resolve to the conversation
+    containing that block (the `conv` column groups rows by conversation)."""
     since = _resolve_since(since, last, today, week)
     config = load_config()
     resolved = platforms_mod.resolve_platform_alias(platform) if platform else None
@@ -1779,6 +1785,12 @@ def keyword(
         except sqlite3.OperationalError as exc:
             console.print(f"[red]FTS5 syntax error: {exc}. Quote phrases with double quotes, e.g. \"AI/ML\".[/red]")
             raise typer.Exit(code=1)
+        # One cache row per printed block, each pointing at its parent
+        # conversation — never deduplicated, so row numbers match the table.
+        browse_mod.save_result_cache(
+            conn, config, [{"id": r["conv_id"], "uid": r["uid"]} for r in rows],
+            {"query": query, "platform": platform, "since": since, "before": before, "limit": limit, "mode": "keyword"},
+        )
     finally:
         conn.close()
     if not rows:
@@ -1786,16 +1798,20 @@ def keyword(
         return
     from rich.markup import escape
     table = Table(title=f"keyword: {query!r}", expand=False)
+    table.add_column("#", justify="right", no_wrap=True)
+    table.add_column("conv", justify="right", no_wrap=True)
     table.add_column("platform", no_wrap=True)
     table.add_column("type", no_wrap=True)
     table.add_column("conversation", overflow="ellipsis", max_width=display_mod.TITLE_MAX)
     table.add_column("snippet")
-    for r in rows:
-        table.add_row(r["platform"], r["type"], escape(r["title"] or "Untitled"), escape(" ".join((r["snippet"] or "").split())))
+    conv_no: dict[int, int] = {}
+    for i, r in enumerate(rows, start=1):
+        n = conv_no.setdefault(r["conv_id"], len(conv_no) + 1)
+        table.add_row(str(i), str(n), r["platform"], r["type"], escape(r["title"] or "Untitled"), escape(" ".join((r["snippet"] or "").split())))
     console.print(table)
     console.print(
         f"showing {len(rows)} of {totals['blocks']} matching blocks "
-        f"across {totals['conversations']} conversations (limit {limit})"
+        f"across {totals['conversations']} conversations (limit {limit}) · saved as last query (row numbers are blocks)"
     )
 
 
