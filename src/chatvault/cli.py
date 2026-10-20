@@ -543,9 +543,13 @@ def reconcile(
     retire: str = typer.Option(None, "--retire", help="Mark a root_dir or path as deliberately gone; requires --reason."),
     reason: str = typer.Option(None, "--reason", help="With --retire, why this source is expected to be absent."),
     status: bool = typer.Option(False, "--status", help="Show presence counts and the last reconcile run, without scanning disk."),
+    no_move_scan: bool = typer.Option(False, "--no-move-scan", help="Skip the by-content search for relocated files; every vanished path reads as missing."),
 ) -> None:
     """Diff DB-tracked source_files against what's actually on disk. Detects
-    deletions that `ingest` (a push, disk -> DB) can never observe on its own. Prints summary lines (or JSON with --json)."""
+    deletions that `ingest` (a push, disk -> DB) can never observe on its own.
+    A vanished path whose bytes (sha256) exist elsewhere under the root or raw/
+    is reported `moved` and its path updated; `missing` means the bytes are gone.
+    Prints summary lines (or JSON with --json)."""
     config = load_config()
     conn = connect(config)
     try:
@@ -570,7 +574,10 @@ def reconcile(
                 console.print("[dim]no reconcile runs yet[/dim]")
             return
 
-        report = reconcile_mod.reconcile(conn, roots=root or None, kind=kind, dry_run=dry_run)
+        report = reconcile_mod.reconcile(
+            conn, roots=root or None, kind=kind, dry_run=dry_run,
+            move_scan=not no_move_scan, search_dirs=[config.raw_dir],
+        )
     finally:
         conn.close()
 
@@ -581,8 +588,21 @@ def reconcile(
     console.print(f"roots checked: {len(report.roots)}")
     console.print(
         f"files checked={report.checked} still_present={report.still_present} "
-        f"newly_missing={report.newly_missing} reappeared={report.reappeared}"
+        f"newly_missing={report.newly_missing} reappeared={report.reappeared} "
+        f"moved={report.moved} changed={report.changed}"
     )
+    if report.move_scan:
+        console.print(f"[dim]move scan: {report.move_scan_seconds:.1f}s (--no-move-scan to skip)[/dim]")
+    if report.moved_detail:
+        console.print("[cyan]moved:[/cyan]")
+        for m in report.moved_detail[:10]:
+            console.print(f"  {m['old']}\n    -> {m['new']}")
+        if len(report.moved_detail) > 10:
+            console.print(f"  ... and {len(report.moved_detail) - 10} more")
+    if report.changed_detail:
+        console.print("[yellow]changed (path exists, bytes differ — review):[/yellow]")
+        for m in report.changed_detail[:20]:
+            console.print(f"  {m['path']}")
     if report.missing:
         console.print("[yellow]missing:[/yellow]")
         for m in report.missing[:20]:

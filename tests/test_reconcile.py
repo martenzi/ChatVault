@@ -159,3 +159,48 @@ def test_export_manifest_lists_missing_and_retired(vault, conn):
     content = out.read_text()
     assert "## Retired — deliberately archived, expected absence" in content
     assert "archived deliberately" in content
+
+
+def test_reconcile_reports_moved_file_and_updates_path(vault, conn):
+    staged, _ = _stage_live_source(vault, conn)
+    dest_dir = vault.raw_dir / "10_ingested" / "claude_code"
+    dest_dir.mkdir(parents=True)
+    dest = dest_dir / staged.name
+    staged.rename(dest)
+
+    report = reconcile.reconcile(conn, kind="live", search_dirs=[vault.raw_dir])
+    assert report.moved == 1
+    assert report.newly_missing == 0
+    row = conn.execute("SELECT path, presence, presence_note FROM source_files LIMIT 1").fetchone()
+    assert row["path"] == str(dest)
+    assert row["presence"] == "present"
+    assert "moved from" in row["presence_note"]
+
+    again = reconcile.reconcile(conn, kind="live", search_dirs=[vault.raw_dir])
+    assert again.moved == 0 and again.newly_missing == 0
+
+
+def test_reconcile_move_scan_off_reads_move_as_missing(vault, conn):
+    staged, _ = _stage_live_source(vault, conn)
+    staged.rename(vault.raw_dir / "renamed.jsonl")
+    report = reconcile.reconcile(conn, kind="live", move_scan=False, search_dirs=[vault.raw_dir])
+    assert report.moved == 0 and report.newly_missing == 1
+
+
+def test_reconcile_missing_only_when_bytes_gone(vault, conn):
+    staged, _ = _stage_live_source(vault, conn)
+    # same name elsewhere but different bytes is not a move
+    other = vault.raw_dir / "elsewhere.jsonl"
+    other.write_text(staged.read_text() + "\n")
+    staged.unlink()
+    report = reconcile.reconcile(conn, kind="live", search_dirs=[vault.raw_dir])
+    assert report.moved == 0 and report.newly_missing == 1
+
+
+def test_reconcile_flags_changed_frozen_file(vault, conn):
+    staged, root_dir = _stage_live_source(vault, conn)
+    conn.execute("UPDATE source_files SET kind = 'frozen'")
+    conn.commit()
+    staged.write_text("{}\n")
+    report = reconcile.reconcile(conn, kind="frozen")
+    assert report.changed == 1 and report.newly_missing == 0
