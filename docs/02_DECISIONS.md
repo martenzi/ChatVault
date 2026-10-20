@@ -187,6 +187,18 @@ See `10_CONCEPTS_label_tag_project.md`.
 
 ---
 
+## D17 — `raw/` shows status by location, and "ingested" is decided by content, never by path
+
+**Chosen:** `raw/` is organised as `00_inbox` → `10_ingested/<platform>/<date>` / `20_needs_adapter` / `30_excluded/<reason>` / `40_archive`, so the folder itself says what is ingested. `chatvault intake` moves a file only after its `source_files` row is `ok`, and updates the recorded path in the same step. Whether something is already ingested is decided by sha256, then by looking real text up in the full-text index — never by folder name, file name or a title match.
+
+**Rejected:** trusting paths (the user reorganises `raw/` by hand and a path match is meaningless afterwards); a daemon watching the folder (no daemon infrastructure exists, and run-on-command is what was asked for).
+
+**Why:** four sources (OpenWebUI, Lawline, Codex, two single-chat exports) went unnoticed for weeks because `audit` always failed and nothing recorded sources that were never ingested. A title match once produced a false "Lawline is done"; a text-mention search once mistook mentions for provenance. `reconcile` is move-aware (same bytes elsewhere = `moved`, only vanished bytes = `missing`) so a reorganisation can never read as data loss.
+
+**How:** `src/chatvault/intake.py`, `source_registry.py`, `docs/source_registry.md`; `chatvault sources status` exits non-zero for an unexplained chat-shaped file.
+
+---
+
 ## Deliberately not decided
 
 Open by choice, not oversight:

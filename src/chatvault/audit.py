@@ -127,6 +127,39 @@ def _check_ingest_completeness(conn: sqlite3.Connection, config: Config, raw_dir
         )
     )
 
+    # The one loud signal: conversation-shaped data nobody has accounted for.
+    # Everything else above is housekeeping; this is what went unnoticed for
+    # OpenWebUI, Lawline and Codex (docs/72).
+    from chatvault import intake
+
+    needs = []
+    needs_dir = raw_dir / intake.NEEDS_ADAPTER
+    if needs_dir.is_dir():
+        needs = [p for p in needs_dir.rglob("*") if p.is_file() and p.name not in intake.JUNK_NAMES | intake.SYSTEM_NAMES]
+    loose = [
+        p for p in unclaimed_paths
+        if intake.looks_like_chat(p) and not intake.content_in_vault(conn, p)[0]
+    ]
+    chat_unclaimed = sorted({*needs, *loose})
+    results.append(
+        CheckResult(
+            "A", "unclaimed conversation data",
+            "pass" if not chat_unclaimed else "fail",
+            f"{len(chat_unclaimed)} conversation-shaped file(s) under raw/ with no source_files row and no recorded reason"
+            + (": " + ", ".join(str(p.relative_to(raw_dir)) for p in chat_unclaimed[:5]) if chat_unclaimed else ""),
+            data={"paths": [str(p) for p in chat_unclaimed]},
+        )
+    )
+    inbox_dir = raw_dir / intake.INBOX
+    waiting = [p for p in inbox_dir.rglob("*") if p.is_file() and p.name not in intake.JUNK_NAMES] if inbox_dir.is_dir() else []
+    results.append(
+        CheckResult(
+            "A", "inbox empty",
+            "pass" if not waiting else "warn",
+            f"{len(waiting)} file(s) waiting in 00_inbox (run `chatvault intake --apply`)",
+        )
+    )
+
     missing_rows = conn.execute(
         "SELECT path, missing_since FROM source_files WHERE presence = 'missing' ORDER BY missing_since"
     ).fetchall()
@@ -470,7 +503,9 @@ def exit_code(report: AuditReport, strict: bool = False) -> int:
     if v == "fail":
         return 2
     if v == "warn":
-        return 2 if strict else 1
+        # WARN is an observation (known data-quality residue), not a failure:
+        # a healthy vault exits 0 so a non-zero exit always means something new.
+        return 2 if strict else 0
     return 0
 
 

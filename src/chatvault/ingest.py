@@ -76,6 +76,9 @@ class IngestSummary:
 # above this folder skip it; an explicit `chatvault ingest raw/_ingested/...`
 # still processes that tree (relative parts then have no leading `_ingested`).
 _INGESTED_ARCHIVE_DIR = "_ingested"
+# raw/ lifecycle folders (chatvault.intake): a walk of raw/ must not re-read
+# files that were already filed, excluded or archived.
+_LIFECYCLE_SKIP_DIRS = {"_ingested", "10_ingested", "20_needs_adapter", "30_excluded", "40_archive"}
 
 
 def _adapter_parse_warnings(mod) -> list[str]:
@@ -112,7 +115,7 @@ def _under_ingested_archive(p: Path, walk_root: Path) -> bool:
         rel = p.resolve().relative_to(walk_root.resolve())
     except ValueError:
         return False
-    return _INGESTED_ARCHIVE_DIR in rel.parts
+    return bool(_LIFECYCLE_SKIP_DIRS & set(rel.parts))
 
 
 def _iter_candidate_files(path: Path, exclude_dir: Path | None = None) -> list[Path]:

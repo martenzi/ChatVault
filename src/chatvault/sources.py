@@ -20,6 +20,12 @@ def _ignored(path: Path) -> bool:
     return path.name in IGNORE_EXACT or path.suffix.lower() in IGNORE_SUFFIXES
 
 
+# raw/ lifecycle folders whose contents are already accounted for (see
+# chatvault.intake): filed, deliberately excluded, or archived.
+SETTLED_DIRS = {"10_ingested", "30_excluded", "40_archive"}
+IGNORE_GENERATED = {"_STATUS.md", "WHY.md"}
+
+
 def walk_raw(directory: Path, ignore_dir: Path | None = None) -> list[Path]:
     """Every non-ignored file under directory. ignore_dir (typically
     raw_exclusions/) is skipped even if it happens to be a descendant of
@@ -29,6 +35,9 @@ def walk_raw(directory: Path, ignore_dir: Path | None = None) -> list[Path]:
     out = []
     for path in sorted(directory.rglob("*")):
         if not path.is_file() or _ignored(path):
+            continue
+        rel_parts = path.relative_to(directory).parts
+        if rel_parts[0] in SETTLED_DIRS or path.name in IGNORE_GENERATED:
             continue
         if ignore_resolved is not None:
             try:

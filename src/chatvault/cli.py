@@ -611,6 +611,60 @@ def reconcile(
             console.print(f"  ... and {len(report.missing) - 20} more")
 
 
+@app.command(rich_help_panel="Getting Data In")
+def intake(
+    apply: bool = typer.Option(False, "--apply", help="Actually ingest and move files. Without it: a dry run that only reports."),
+    reorganise: bool = typer.Option(False, "--reorganise", help="One-time: classify every file already under raw/ and (with --apply) move it into the 00_inbox..40_archive layout."),
+    plan_out: str = typer.Option(None, "--plan-out", help="With --reorganise, write the per-folder plan report to this markdown file."),
+) -> None:
+    """Drop files in raw/00_inbox/, run this, and raw/ shows what happened.
+
+    Each inbox file is ingested, verified (its source_files row must be ok),
+    then moved to raw/10_ingested/<platform>/<date>/ with its recorded path
+    updated in the same step. Chat-shaped files no adapter claims go to
+    raw/20_needs_adapter/; anything else is left in the inbox for you.
+    Dry run by default. raw/_STATUS.md is rewritten after every run."""
+    from chatvault import intake as intake_mod
+
+    config = load_config()
+    conn = connect(config)
+    try:
+        if reorganise:
+            entries = intake_mod.classify_tree(conn, config.raw_dir)
+            intake_mod.assign_destinations(entries)
+            summ = intake_mod.plan_summary(entries)
+            console.print(f"files={summ['files']} buckets={summ['buckets']} would move={summ['moves']}")
+            if plan_out:
+                intake_mod.write_plan_report(entries, Path(plan_out), raw_dir=config.raw_dir)
+                console.print(f"plan written to {plan_out} (and logs/raw_migration_plan.csv, one row per file)")
+            if not apply:
+                console.print("[dim]dry run — nothing moved. Re-run with --apply (take `chatvault backup` first).[/dim]")
+                return
+            result = intake_mod.apply_reorganisation(conn, config, entries)
+            console.print(f"moved {result['moved_files']} files; reconcile: {result['reconcile']}")
+            return
+
+        items = intake_mod.run_intake(
+            conn, config, apply=apply,
+            ingest_fn=lambda p: ingest_mod.ingest_path(conn, p, config=config, embed=False),
+        )
+        table = Table(title="intake" + ("" if apply else " (dry run)"))
+        for col in ("file", "result", "detail"):
+            table.add_column(col, overflow="fold")
+        for it in items:
+            table.add_row(str(it.path.relative_to(config.raw_dir)), it.action, it.detail)
+        if items:
+            console.print(table)
+        else:
+            console.print("00_inbox is empty — nothing to do.")
+        if any(i.action == "failed" for i in items):
+            raise typer.Exit(code=1)
+        if not apply and any(i.action in ("would_move", "needs_adapter") for i in items):
+            console.print("[dim]dry run — re-run with --apply to ingest and file them.[/dim]")
+    finally:
+        conn.close()
+
+
 @app.command(rich_help_panel="System & Health")
 def verify() -> None:
     """Row counts, orphan checks, FTS integrity, hash spot-checks. Prints a table."""
@@ -644,7 +698,7 @@ def audit(
     json_out: bool = typer.Option(False, "--json"),
     markdown: Path = typer.Option(None, "--markdown", help="Write the report as markdown to this file."),
     sample: bool = typer.Option(False, "--sample", help="Emit a stratified edge-case sample, 5 per platform."),
-    strict: bool = typer.Option(False, "--strict", help="Treat WARN as FAIL for exit code purposes."),
+    strict: bool = typer.Option(False, "--strict", help="Treat WARN as FAIL for exit code purposes (default: only FAIL is non-zero)."),
 ) -> None:
     """Did everything in the files end up in the database, in the right place?
     Compares DB state against disk and against expectations — distinct from
@@ -2066,6 +2120,35 @@ def sources_unclaimed(
     for p in paths:
         console.print(str(p))
     console.print(f"[yellow]{len(paths)} unclaimed file(s)[/yellow]")
+
+
+@sources_app.command("status")
+def sources_status() -> None:
+    """One row per source (not per file): what exists, what is in the vault, and why anything is not.
+    Counts are live-scoped. Exits non-zero if a chat-shaped file under raw/ is unaccounted for
+    (not ingested and no reason recorded in docs/source_registry.md)."""
+    from chatvault import source_registry
+
+    config = load_config()
+    conn = connect(config)
+    try:
+        rows = source_registry.build_status(conn, config)
+    finally:
+        conn.close()
+    table = Table(title="sources (conversation counts are live)")
+    for col in ("source", "platform", "adapter", "files", "convs", "newest", "state"):
+        table.add_column(col, overflow="fold")
+    for r in rows:
+        state = f"[red]{r.state}[/red]" if r.problem else (r.state if r.state == "ingested" else f"[yellow]{r.state}[/yellow]")
+        table.add_row(r.source, r.platform, r.adapter, r.files, r.convs, r.newest, state)
+    console.print(table)
+    notes = [r for r in rows if r.note]
+    for r in notes:
+        console.print(f"[dim]{r.source}: {r.note}[/dim]")
+    bad = [r for r in rows if r.problem]
+    if bad:
+        console.print(f"[red]{len(bad)} source(s) without a recorded reason — fix the registry or build the adapter.[/red]")
+        raise typer.Exit(code=1)
 
 
 @sources_app.command("export-manifest")

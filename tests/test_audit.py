@@ -70,7 +70,7 @@ def test_audit_strict_promotes_warn_to_fail_exit_code(vault, conn):
     conn.commit()
     report = audit.run(conn, vault)
     assert audit.verdict(report) == "warn"
-    assert audit.exit_code(report, strict=False) == 1
+    assert audit.exit_code(report, strict=False) == 0
     assert audit.exit_code(report, strict=True) == 2
 
 
@@ -101,3 +101,12 @@ def test_audit_persists_run(vault, conn):
 
     row = conn.execute("SELECT verdict FROM audit_runs ORDER BY id DESC LIMIT 1").fetchone()
     assert row["verdict"] == audit.verdict(report)
+
+
+def test_exit_code_warn_is_zero_unless_strict():
+    from chatvault.audit import AuditReport, CheckResult, exit_code
+
+    warn = AuditReport(results=[CheckResult("A", "x", "warn", "d")])
+    fail = AuditReport(results=[CheckResult("A", "x", "fail", "d")])
+    assert exit_code(warn) == 0 and exit_code(warn, strict=True) == 2
+    assert exit_code(fail) == 2
