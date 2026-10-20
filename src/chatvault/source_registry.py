@@ -79,7 +79,7 @@ def discover_unexplained(conn: sqlite3.Connection, config: Config, registry: lis
             continue
         if intake.content_in_vault(conn, p)[0]:
             continue
-        if any(fnmatch.fnmatch(rel, r.match) for r in covering):
+        if any(fnmatch.fnmatch(rel, pat.strip()) for r in covering for pat in r.match.split(",")):
             continue
         top = Path(rel).parts[0] if len(Path(rel).parts) > 1 else "(raw root)"
         found.setdefault(top, []).append(rel)
