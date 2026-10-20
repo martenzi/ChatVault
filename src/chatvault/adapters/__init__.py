@@ -29,8 +29,10 @@ def register_late_adapters() -> None:
         google_ai_mode,
         grok,
         hermes,
+        lawline,
         notebooklm,
         openclaw,
+        openwebui,
         vscode_legacy,
         windsurf_legacy,
     )
@@ -99,6 +101,14 @@ def register_late_adapters() -> None:
     # a plain-text USER:/MODEL: transcript; sniffs on file name, parent
     # directory and the leading role tag. Chat sessions only.
     _REGISTRY.setdefault("notebooklm", notebooklm)
+    # openwebui: per-chat export with `history.messages` tree + `currentId`
+    # under `content`; sniffs on that structure, which no other adapter's
+    # sniff looks for.
+    _REGISTRY.setdefault("openwebui", openwebui)
+    # lawline: account export whose `chatSessions` carry Vercel AI SDK
+    # UI-message parts; sniffs on the top-level "chatSessions" list of
+    # {threadId, messages} objects.
+    _REGISTRY.setdefault("lawline", lawline)
     # Deliberately last: permissive fallback, must not shadow specific adapters.
     _REGISTRY.setdefault("generic_jsonl", generic_jsonl)
 

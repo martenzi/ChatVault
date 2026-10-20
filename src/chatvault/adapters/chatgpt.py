@@ -30,7 +30,21 @@ def sniff(path: Path) -> bool:
     # deepseek.py). Reject explicitly rather than relying on registry order,
     # so this stays correct regardless of where either adapter sits in
     # adapters._REGISTRY.
-    return b'"mapping"' in prefix and b'"fragments"' not in prefix
+    if b'"mapping"' in prefix and b'"fragments"' not in prefix:
+        return True
+    return _is_codex_prefix(prefix)
+
+
+# ChatGPT Codex task export (`codex.json` beside conversations.json): a list
+# of tasks [{id "task_e_...", title, archived, turns[]}]; user turns carry
+# input_items[].content[{content_type:'text', text}], assistant turns carry
+# output_items[] of type message (content: text / repo_file_citation parts),
+# partial_repo_snapshot, pr and follow_up_diff. Enumerated 2026-10-20 over the
+# only two (byte-identical) copies: 1 task, 8 turns. No timestamps anywhere.
+# Routed through the ordinary sniff/parse pair — the shapes cannot collide
+# with the mapping export — so dedupe and source_files bookkeeping come free.
+def _is_codex_prefix(prefix: bytes) -> bool:
+    return b'"turns"' in prefix and b'"input_items"' in prefix and b'"mapping"' not in prefix
 
 
 def _epoch_to_iso(value) -> str | None:
@@ -149,9 +163,65 @@ def _active_path(mapping: dict, current_node: str | None) -> list[str]:
     return path
 
 
+def _codex_blocks(turn: dict) -> list[dict]:
+    blocks: list[dict] = []
+
+    def add(type_: str, text: str, raw: dict, tool_name: str | None = None) -> None:
+        blocks.append(make_block(len(blocks), type_, text, raw=raw, tool_name=tool_name))
+
+    for item in turn.get("input_items") or []:
+        for part in item.get("content") or []:
+            add("text", part.get("text") or "", part)
+    for item in turn.get("output_items") or []:
+        kind = item.get("type")
+        if kind == "message":
+            content = item.get("content")
+            for part in content if isinstance(content, list) else [content]:
+                if isinstance(part, dict) and part.get("content_type") == "text":
+                    add("text", part.get("text") or "", part)
+                elif isinstance(part, dict) and part.get("content_type") == "repo_file_citation":
+                    add("meta", part.get("path") or part.get("file_path") or "", part)
+                else:
+                    add("unknown", part if isinstance(part, str) else "", {"value": part})
+        elif kind == "partial_repo_snapshot":
+            paths = [f.get("path") for f in item.get("files") or [] if isinstance(f, dict) and f.get("path")]
+            add("tool_result", "\n".join(paths), item, "partial_repo_snapshot")
+        elif kind == "pr":
+            add("tool_result", "\n\n".join(x for x in (item.get("pr_title"), item.get("pr_message")) if x), item, "pr")
+        elif kind == "follow_up_diff":
+            add("tool_result", "", item, "follow_up_diff")
+        else:
+            add("unknown", "", item)
+    return blocks
+
+
+def _parse_codex(path: Path, tasks: list) -> Iterator[dict]:
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        messages = []
+        for i, turn in enumerate(task.get("turns") or []):
+            role = turn.get("role") or "unknown"
+            messages.append(make_message(i, role, None, None, _codex_blocks(turn), raw=turn))
+        yield make_conversation(
+            platform=platform,
+            native_id=task.get("id"),
+            title=task.get("title"),
+            project=None,
+            started_at=None,
+            ended_at=None,
+            source_path=str(path),
+            raw={k: v for k, v in task.items() if k != "turns"} | {"kind": "codex_task"},
+            messages=messages,
+        )
+
+
 def parse(path: Path) -> Iterator[dict]:
     data = orjson.loads(path.read_bytes())
     conversations = data if isinstance(data, list) else [data]
+    if conversations and isinstance(conversations[0], dict) and "turns" in conversations[0] and "mapping" not in conversations[0]:
+        yield from _parse_codex(path, conversations)
+        return
 
     for conv in conversations:
         if not isinstance(conv, dict):

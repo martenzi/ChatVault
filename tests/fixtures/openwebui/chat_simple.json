@@ -1,0 +1,142 @@
+{
+ "created_at": "2025-04-03 23:44:13",
+ "title": "Primary keys",
+ "content": {
+  "id": "",
+  "title": "Primary keys",
+  "models": [
+   "deepseek/deepseek-reasoner"
+  ],
+  "params": {},
+  "history": {
+   "messages": {
+    "11111111-0000-0000-0000-000000000001": {
+     "id": "11111111-0000-0000-0000-000000000001",
+     "parentId": null,
+     "childrenIds": [
+      "11111111-0000-0000-0000-000000000002"
+     ],
+     "role": "user",
+     "content": "What is a primary key?",
+     "timestamp": 1743723852,
+     "models": [
+      "deepseek/deepseek-reasoner"
+     ]
+    },
+    "11111111-0000-0000-0000-000000000002": {
+     "parentId": "11111111-0000-0000-0000-000000000001",
+     "id": "11111111-0000-0000-0000-000000000002",
+     "childrenIds": [
+      "11111111-0000-0000-0000-000000000003"
+     ],
+     "role": "assistant",
+     "content": "<details type=\"reasoning\" done=\"true\" duration=\"3\">\n<summary>Thought for 3 seconds</summary>\n> The user asks a basic database question.\n> Keep it short.\n</details>\nA primary key uniquely identifies a row.",
+     "model": "deepseek/deepseek-reasoner",
+     "modelName": "deepseek/deepseek-reasoner",
+     "modelIdx": 0,
+     "userContext": null,
+     "timestamp": 1743723855,
+     "done": true
+    },
+    "11111111-0000-0000-0000-000000000003": {
+     "id": "11111111-0000-0000-0000-000000000003",
+     "parentId": "11111111-0000-0000-0000-000000000002",
+     "childrenIds": [
+      "11111111-0000-0000-0000-000000000004",
+      "11111111-0000-0000-0000-000000000005"
+     ],
+     "role": "user",
+     "content": "Give an example.",
+     "timestamp": 1743723900,
+     "models": [
+      "deepseek/deepseek-reasoner"
+     ]
+    },
+    "11111111-0000-0000-0000-000000000004": {
+     "parentId": "11111111-0000-0000-0000-000000000003",
+     "id": "11111111-0000-0000-0000-000000000004",
+     "childrenIds": [],
+     "role": "assistant",
+     "content": "First draft: id INTEGER PRIMARY KEY.",
+     "model": "deepseek/deepseek-reasoner",
+     "modelName": "deepseek/deepseek-reasoner",
+     "modelIdx": 0,
+     "timestamp": 1743723905,
+     "done": true
+    },
+    "11111111-0000-0000-0000-000000000005": {
+     "parentId": "11111111-0000-0000-0000-000000000003",
+     "id": "11111111-0000-0000-0000-000000000005",
+     "childrenIds": [],
+     "role": "assistant",
+     "content": "CREATE TABLE t (id INTEGER PRIMARY KEY);",
+     "model": "deepseek/deepseek-reasoner",
+     "modelName": "deepseek/deepseek-reasoner",
+     "modelIdx": 0,
+     "timestamp": 1743723910,
+     "done": true
+    }
+   },
+   "currentId": "11111111-0000-0000-0000-000000000005"
+  },
+  "messages": [
+   {
+    "id": "11111111-0000-0000-0000-000000000001",
+    "parentId": null,
+    "childrenIds": [
+     "11111111-0000-0000-0000-000000000002"
+    ],
+    "role": "user",
+    "content": "What is a primary key?",
+    "timestamp": 1743723852,
+    "models": [
+     "deepseek/deepseek-reasoner"
+    ]
+   },
+   {
+    "parentId": "11111111-0000-0000-0000-000000000001",
+    "id": "11111111-0000-0000-0000-000000000002",
+    "childrenIds": [
+     "11111111-0000-0000-0000-000000000003"
+    ],
+    "role": "assistant",
+    "content": "<details type=\"reasoning\" done=\"true\" duration=\"3\">\n<summary>Thought for 3 seconds</summary>\n> The user asks a basic database question.\n> Keep it short.\n</details>\nA primary key uniquely identifies a row.",
+    "model": "deepseek/deepseek-reasoner",
+    "modelName": "deepseek/deepseek-reasoner",
+    "modelIdx": 0,
+    "userContext": null,
+    "timestamp": 1743723855,
+    "done": true
+   },
+   {
+    "id": "11111111-0000-0000-0000-000000000003",
+    "parentId": "11111111-0000-0000-0000-000000000002",
+    "childrenIds": [
+     "11111111-0000-0000-0000-000000000004",
+     "11111111-0000-0000-0000-000000000005"
+    ],
+    "role": "user",
+    "content": "Give an example.",
+    "timestamp": 1743723900,
+    "models": [
+     "deepseek/deepseek-reasoner"
+    ]
+   },
+   {
+    "parentId": "11111111-0000-0000-0000-000000000003",
+    "id": "11111111-0000-0000-0000-000000000004",
+    "childrenIds": [],
+    "role": "assistant",
+    "content": "First draft: id INTEGER PRIMARY KEY.",
+    "model": "deepseek/deepseek-reasoner",
+    "modelName": "deepseek/deepseek-reasoner",
+    "modelIdx": 0,
+    "timestamp": 1743723905,
+    "done": true
+   }
+  ],
+  "tags": [],
+  "timestamp": 1743723852858,
+  "files": []
+ }
+}

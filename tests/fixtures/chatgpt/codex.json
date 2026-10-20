@@ -1,0 +1,76 @@
+[
+ {
+  "id": "task_e_fixture",
+  "title": "Fixture task",
+  "archived": false,
+  "turns": [
+   {
+    "custom_instructions": null,
+    "id": "u1",
+    "input_items": [
+     {
+      "type": "message",
+      "role": "user",
+      "content": [
+       {
+        "content_type": "text",
+        "text": "Do the thing."
+       }
+      ]
+     }
+    ],
+    "role": "user"
+   },
+   {
+    "branch": "main",
+    "branch_name": null,
+    "external_pull_request_id": null,
+    "id": "a1",
+    "previous_turn_id": "u1",
+    "pull_request_status": "not_created",
+    "role": "assistant",
+    "turn_status": "TaskTurnStatusEnum.COMPLETED",
+    "output_items": [
+     {
+      "type": "message",
+      "role": "assistant",
+      "content": [
+       {
+        "content_type": "text",
+        "text": "Done."
+       },
+       {
+        "content_type": "repo_file_citation",
+        "path": "src/x.py",
+        "line_range_start": 1,
+        "line_range_end": 3
+       }
+      ]
+     },
+     {
+      "type": "partial_repo_snapshot",
+      "files": [
+       {
+        "path": "src/x.py",
+        "contents": "x",
+        "line_range_contents": null,
+        "missing_reason": null
+       }
+      ]
+     },
+     {
+      "type": "pr",
+      "pr_title": "Add x",
+      "pr_message": "Body",
+      "output_diff": {},
+      "pre_apply_patch": null
+     },
+     {
+      "type": "follow_up_diff",
+      "output_diff": {}
+     }
+    ]
+   }
+  ]
+ }
+]

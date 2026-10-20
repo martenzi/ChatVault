@@ -1,0 +1,147 @@
+{
+ "exportDate": "2026-10-14T08:50:35.290Z",
+ "user": {},
+ "usageEvents": [],
+ "chatSessions": [
+  {
+   "threadId": "thread-fixture-0001",
+   "title": "Fixture question",
+   "createdAt": "2026-05-31T11:33:29.000Z",
+   "updatedAt": "2026-05-31T11:40:00.000Z",
+   "messages": [
+    {
+     "id": "m1",
+     "role": "user",
+     "metadata": {
+      "createdAt": "2026-05-31T11:33:29.758Z",
+      "threadId": "thread-fixture-0001",
+      "resourceId": "user:x:org:y"
+     },
+     "parts": [
+      {
+       "type": "text",
+       "text": "What does the fixture law say?",
+       "providerMetadata": {}
+      }
+     ]
+    },
+    {
+     "id": "m2",
+     "role": "assistant",
+     "metadata": {
+      "createdAt": "2026-05-31T11:33:40.000Z",
+      "threadId": "thread-fixture-0001",
+      "resourceId": "user:x:org:y",
+      "modelId": "model-x",
+      "provider": "p"
+     },
+     "parts": [
+      {
+       "type": "step-start"
+      },
+      {
+       "type": "reasoning",
+       "text": "Plan: look it up.",
+       "state": "done",
+       "providerMetadata": {}
+      },
+      {
+       "type": "data-progress",
+       "data": {
+        "label": "Searching",
+        "query": "q",
+        "toolCallId": "c1",
+        "steps": [
+         {
+          "id": "s",
+          "label": "Step one",
+          "status": "done"
+         }
+        ]
+       }
+      },
+      {
+       "type": "tool-sfs",
+       "toolCallId": "c1",
+       "input": {
+        "query": "q"
+       },
+       "output": {
+        "sources": [],
+        "summary": "Summary text.",
+        "totalFound": 0
+       },
+       "state": "output-available",
+       "callProviderMetadata": {
+        "mastra": {
+         "modelOutput": {
+          "type": "text",
+          "value": "Model-facing result text."
+         }
+        }
+       }
+      },
+      {
+       "type": "tool-generate_email",
+       "toolCallId": "c2",
+       "input": {
+        "body": "b"
+       },
+       "output": {
+        "body": "Email body",
+        "success": true
+       },
+       "state": "output-available"
+      },
+      {
+       "type": "text",
+       "text": "The answer.",
+       "providerMetadata": {}
+      }
+     ]
+    },
+    {
+     "id": "m3",
+     "role": "system",
+     "metadata": {
+      "createdAt": "2026-05-31T11:34:00.000Z",
+      "threadId": "thread-fixture-0001",
+      "resourceId": "user:x:org:y",
+      "signal": {
+       "type": "system-reminder"
+      }
+     },
+     "parts": [
+      {
+       "type": "data-system-reminder",
+       "data": {
+        "id": "r",
+        "type": "system-reminder",
+        "contents": "Last step.",
+        "createdAt": "2026-05-31T11:34:00.000Z"
+       }
+      }
+     ]
+    },
+    {
+     "id": "m4",
+     "role": "assistant",
+     "metadata": {
+      "createdAt": "2026-05-31T11:35:00.000Z",
+      "threadId": "thread-fixture-0001",
+      "resourceId": "user:x:org:y",
+      "modelId": "model-x",
+      "provider": "p"
+     },
+     "parts": [
+      {
+       "type": "brand-new-part",
+       "text": "mystery"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "chatFeedback": []
+}
