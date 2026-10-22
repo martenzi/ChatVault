@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from chatvault import dates as dates_mod
 from chatvault import sources
 from chatvault.config import Config
 
@@ -36,6 +37,9 @@ class AuditReport:
     sample: list[dict] | None = None
     run_at: str = ""
 
+
+# A live source whose newest conversations waited longer than this to be ingested has gone stale.
+CAPTURE_DELAY_WARN_DAYS = 14
 
 ACCEPTED_FILE = "audit_accepted.md"
 
@@ -409,6 +413,44 @@ def _check_dedupe_health(conn: sqlite3.Connection) -> list[CheckResult]:
     return results
 
 
+def _check_date_health(conn: sqlite3.Connection) -> list[CheckResult]:
+    """Group G. One capture-delay line per live source (how long conversations
+    that ended after the source was first ingested waited to be captured) plus
+    the three date-gap counts. Gaps are flagged by `chatvault flag-dates`, never
+    corrected."""
+    results = []
+    for d in dates_mod.capture_delay(conn):
+        # Warn on the present, not the past: a historic 38-day lag can't be undone and
+        # would keep this WARN forever. Only recent captures (ingested in the last 30
+        # days) that waited too long say the source is going stale now.
+        recent_max = d["recent_max_days"]
+        status = "warn" if recent_max is not None and recent_max > CAPTURE_DELAY_WARN_DAYS else "pass"
+        results.append(CheckResult(
+            "G", f"capture delay: {d['platform']}", status,
+            f"{d['n']} conversation(s) ended after first ingest · median {d['median_days']:.1f}d · "
+            f"p95 {d['p95_days']:.1f}d · max {d['max_days']:.1f}d"
+            + (f" · last 30d max {recent_max:.1f}d" if recent_max is not None else " · none captured in the last 30d")
+            + (f" — over {CAPTURE_DELAY_WARN_DAYS}d: run `chatvault ingest --live`" if status == "warn" else ""),
+            data=d,
+        ))
+    found = dates_mod.classify(conn)
+    for tag, label in ((dates_mod.IMPLAUSIBLE_DATE, "implausible dates"), (dates_mod.NAIVE_TIMESTAMP, "naive timestamps"), (dates_mod.NO_END_DATE, "no end date")):
+        ids = found[tag]
+        tagged = conn.execute(
+            "SELECT COUNT(*) FROM tag_links tl JOIN tags t ON t.id = tl.tag_id WHERE t.name = ? AND tl.target_id IN (SELECT id FROM v_conversations) AND tl.target_type = 'conversation'",
+            (tag,),
+        ).fetchone()[0]
+        by_platform = dates_mod.platform_breakdown(conn, ids)
+        detail = f"{len(ids)} conversation(s)" + (" — " + ", ".join(f"{p} {n}" for p, n in by_platform.items()) if ids else "")
+        untagged = len(ids) - min(len(ids), tagged)
+        if untagged:
+            detail += f" · {untagged} not yet tagged {tag} (run `chatvault flag-dates --apply`)"
+        # implausible dates are the actionable one; the other two are known source limits, flagged once
+        status = "warn" if (tag == dates_mod.IMPLAUSIBLE_DATE and ids) or untagged else "pass"
+        results.append(CheckResult("G", label, status, detail, data={"ids": ids[:200], "total": len(ids)}))
+    return results
+
+
 # ─────────────── F. sample manifest ───────────────
 
 
@@ -488,6 +530,7 @@ def run(
     results += _check_metadata_coverage(conn, platform)
     results += _check_content_coverage(conn, platform)
     results += _check_dedupe_health(conn)
+    results += _check_date_health(conn)
 
     sample_data = _sample_manifest(conn, platform) if sample else None
     return AuditReport(results=results, sample=sample_data, run_at=_now())
@@ -523,7 +566,7 @@ def to_dict(report: AuditReport) -> dict:
 
 def render_markdown(report: AuditReport) -> str:
     lines = [f"# chatvault audit — {report.run_at}", "", f"**Verdict:** {verdict(report).upper()}", ""]
-    for group in "ABCDEF":
+    for group in "ABCDEFG":
         group_results = [r for r in report.results if r.group == group]
         if not group_results:
             continue

@@ -452,12 +452,14 @@ def ingest_path(
         conn.commit()
 
         if touched_conv_ids:
+            from chatvault import dates as dates_mod
             from chatvault import tags as tags_mod
 
             tags_mod.apply_rules(conn, conv_ids=touched_conv_ids)
             tags_mod.flag_model_unknown(conn, touched_conv_ids)
             tags_mod.flag_shape_unclear(conn, touched_conv_ids)
             tags_mod.flag_timestamp_unparsed(conn, touched_conv_ids)
+            dates_mod.flag(conn, touched_conv_ids)
 
             if embed:
                 from chatvault import embeddings as embeddings_mod

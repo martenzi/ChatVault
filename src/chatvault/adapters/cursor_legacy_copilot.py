@@ -265,13 +265,16 @@ def _parse_session(path: Path, meta: dict, records: list[dict]) -> Iterator[dict
     if not messages:
         return
 
+    # Last-message time: every session record carries `iso`; the prompts dump
+    # below has no times at all and stays NULL (flagged review/no-end-date).
+    stamps = [m["created_at"] for m in messages if m.get("created_at")]
     yield make_conversation(
         platform=platform,
         native_id=meta.get("session_id"),
         title=_clean(meta.get("title"), "untitled"),
         project=_clean(meta.get("project"), "unknown"),
         started_at=_iso_z(meta.get("created")),
-        ended_at=None,
+        ended_at=max(stamps) if stamps else None,
         source_path=str(path),
         raw=meta,
         messages=messages,

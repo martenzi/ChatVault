@@ -16,11 +16,12 @@ def search(
     since: str | None = None,
     before: str | None = None,
     totals: dict | None = None,
+    active_since: str | None = None,
 ) -> list[sqlite3.Row]:
     """Block-level FTS. `totals`, if given, is filled with the uncapped
     `blocks` and `conversations` match counts (ignoring `limit`)."""
     sql = """
-        SELECT b.id, b.conv_id, b.type, b.tool_name, snippet(blocks_fts, 0, '[', ']', '…', 24) AS snippet, b.text, c.uid, c.title, c.platform
+        SELECT b.id, b.conv_id, b.type, b.tool_name, snippet(blocks_fts, 0, '[', ']', '…', 24) AS snippet, b.text, c.uid, c.title, c.platform, c.started_at, c.ended_at
         FROM blocks_fts f
         JOIN v_blocks b ON b.id = f.rowid
         JOIN v_conversations c ON c.id = b.conv_id
@@ -46,6 +47,9 @@ def search(
     if before:
         sql += " AND c.started_at < ?"
         params.append(before)
+    if active_since:
+        sql += " AND COALESCE(c.ended_at, c.started_at) >= ?"
+        params.append(active_since)
     if totals is not None:
         head, _, _ = sql.partition("WHERE blocks_fts MATCH ?")
         count_sql = (

@@ -18,10 +18,46 @@ from chatvault.config import Config
 _CACHE_RELATIVE = Path(".chatvault") / "last_query.json"
 
 _SORT_COLUMNS = {
-    "recent": "started_at DESC",
+    # Last activity. NULL ended_at sorts last under DESC in SQLite (NULL is the
+    # smallest value), so undated conversations never lead a freshness sort.
+    "recent": "ended_at DESC, started_at DESC",
+    "started": "started_at DESC",  # what "recent" used to mean
     "oldest": "started_at ASC",
     "longest": "message_count DESC",
 }
+
+TIME_BUCKETS = ("night", "morning", "afternoon", "evening")
+
+
+def _local_dt(ts: str | None) -> datetime | None:
+    """A stored timestamp as an aware datetime in the machine's local zone.
+    Naive timestamps (no Z / offset) return None: their zone is unknown and
+    guessing would mis-bucket them, so time-of-day filters leave them out."""
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        return None
+    return dt.astimezone()
+
+
+def time_of_day(ts: str | None) -> str | None:
+    """night 00-06 · morning 06-12 · afternoon 12-18 · evening 18-24, local time."""
+    dt = _local_dt(ts)
+    return None if dt is None else TIME_BUCKETS[dt.hour // 6]
+
+
+def _local_weekday(ts: str | None) -> int | None:
+    dt = _local_dt(ts)
+    return None if dt is None else dt.weekday()  # Monday = 0
+
+
+def _register_sql_functions(conn: sqlite3.Connection) -> None:
+    conn.create_function("cv_time_of_day", 1, time_of_day, deterministic=True)
+    conn.create_function("cv_weekday", 1, _local_weekday, deterministic=True)
 
 
 class StaleCacheError(ValueError):
@@ -52,8 +88,24 @@ def _filter_clauses(
     tag: str | None = None,
     has_attachments: bool = False,
     untagged: bool = False,
+    active_since: str | None = None,
+    active_before: str | None = None,
+    min_span: float | None = None,
+    min_msgs: int | None = None,
+    max_msgs: int | None = None,
+    when: str | None = None,
+    weekday: bool = False,
+    weekend: bool = False,
 ) -> tuple[list[str], list]:
-    """WHERE fragments (over `v_conversations c`) shared by find and latest."""
+    """WHERE fragments (over `v_conversations c`) shared by find and latest.
+    `since`/`before` test the START date; `active_since`/`active_before` test
+    the LAST-MESSAGE date (`ended_at`, falling back to the start for the few
+    conversations with no end date, so a known-recent start is never missed).
+    The time-of-day / weekday filters need `_register_sql_functions(conn)`."""
+    if when is not None and when not in TIME_BUCKETS:
+        raise ValueError(f"--when must be one of {', '.join(TIME_BUCKETS)}, got {when!r}")
+    if weekday and weekend:
+        raise ValueError("--weekday and --weekend can't be combined — pick one")
     clauses = ["1=1"]
     params: list = []
     if platform:
@@ -70,6 +122,28 @@ def _filter_clauses(
     if before:
         clauses.append("c.started_at < ?")
         params.append(before)
+    if active_since:
+        clauses.append("COALESCE(c.ended_at, c.started_at) >= ?")
+        params.append(active_since)
+    if active_before:
+        clauses.append("COALESCE(c.ended_at, c.started_at) < ?")
+        params.append(active_before)
+    if min_span is not None:
+        clauses.append("c.ended_at IS NOT NULL AND julianday(c.ended_at) - julianday(c.started_at) >= ?")
+        params.append(min_span)
+    if min_msgs is not None:
+        clauses.append("c.message_count >= ?")
+        params.append(min_msgs)
+    if max_msgs is not None:
+        clauses.append("c.message_count <= ?")
+        params.append(max_msgs)
+    if when:
+        clauses.append("cv_time_of_day(c.started_at) = ?")
+        params.append(when)
+    if weekday:
+        clauses.append("cv_weekday(c.started_at) BETWEEN 0 AND 4")
+    if weekend:
+        clauses.append("cv_weekday(c.started_at) >= 5")
     if project:
         clauses.append("c.project = ?")
         params.append(project)
@@ -105,6 +179,7 @@ def find_with_hidden(
     limit: int = 20,
     sort: str = "recent",
     include_injected: bool = False,
+    **date_filters,
 ) -> tuple[list[sqlite3.Row], int, int]:
     """Human-facing lister. No query = most recent first. With a query, titles
     match first, body text (FTS) second — returns (rows limited to `limit`,
@@ -113,9 +188,10 @@ def find_with_hidden(
     if sort not in _SORT_COLUMNS:
         raise ValueError(f"sort must be one of {sorted(_SORT_COLUMNS)}, got {sort!r}")
 
+    _register_sql_functions(conn)
     clauses, params = _filter_clauses(
         platform=platform, since=since, before=before, project=project, tag=tag,
-        has_attachments=has_attachments, untagged=untagged,
+        has_attachments=has_attachments, untagged=untagged, **date_filters,
     )
     where_sql = " AND ".join(clauses)
     order_sql = _SORT_COLUMNS[sort]
@@ -301,6 +377,23 @@ def resolve_relative_since(
     return ((now or datetime.now(timezone.utc)) - n * _UNIT[unit]).strftime("%Y-%m-%dT%H:%M:%S")
 
 
+def resolve_active_since(
+    active_since: str | None = None, active_last: str | None = None, now: datetime | None = None
+) -> str | None:
+    """`--active-since` takes an ISO date or a relative window ('7d'); `--active-last`
+    is the explicit relative form. Both at once is an error, never a silent pick."""
+    if active_since and active_last:
+        raise ValueError("--active-since and --active-last can't be combined — pick one")
+    token = active_last or (active_since if active_since and _RELATIVE_RE.match(active_since) else None)
+    if token is None:
+        return active_since
+    m = _RELATIVE_RE.match(token)
+    if not m:
+        raise ValueError(f"--active-last must look like 24h, 7d, 2w, 3m or 1y, got {token!r}")
+    n, unit = int(m.group(1)), m.group(2)
+    return ((now or datetime.now(timezone.utc)) - n * _UNIT[unit]).strftime("%Y-%m-%dT%H:%M:%S")
+
+
 def _require_window_functions() -> None:
     if sqlite3.sqlite_version_info < (3, 25, 0):
         raise ValueError(
@@ -318,18 +411,24 @@ def latest(
     project: str | None = None,
     tag: str | None = None,
     by_ingest: bool = False,
+    by_started: bool = False,
+    **date_filters,
 ) -> tuple[list[sqlite3.Row], int]:
     """Recency listing with no text matching. Returns (rows, total matching
-    the filters). Rows carry `days_ago` (whole days from the ordering column
+    the filters). Ordered by last activity (`ended_at`) unless `by_ingest` or
+    `by_started`. Rows carry `days_ago` (whole days from the ordering column
     to now; NULL when that column is NULL) and `attachment_count`. With
     `per_platform=N`, the N newest of every platform, ordered platform then
     newest-first; otherwise the `limit` newest overall."""
-    col = "ingested_at" if by_ingest else "started_at"
-    clauses, params = _filter_clauses(platform=platform, since=since, before=before, project=project, tag=tag)
+    col = "ingested_at" if by_ingest else "started_at" if by_started else "ended_at"
+    _register_sql_functions(conn)
+    clauses, params = _filter_clauses(
+        platform=platform, since=since, before=before, project=project, tag=tag, **date_filters
+    )
     where_sql = " AND ".join(clauses)
     total = conn.execute(f"SELECT COUNT(*) FROM v_conversations c WHERE {where_sql}", params).fetchone()[0]  # noqa: S608
     cols = (
-        "c.id, c.uid, c.platform, c.title, c.project, c.started_at, c.ingested_at, c.message_count, "
+        "c.id, c.uid, c.platform, c.title, c.project, c.started_at, c.ended_at, c.ingested_at, c.message_count, "
         f"CAST(julianday('now') - julianday(c.{col}) AS INTEGER) AS days_ago, "
         "(SELECT COUNT(*) FROM v_blocks b WHERE b.conv_id = c.id AND b.type = 'attachment') AS attachment_count"
     )
@@ -359,7 +458,7 @@ def rows_by_ids(conn: sqlite3.Connection, ids: list[int]) -> list[sqlite3.Row]:
         chunk = seen[i:i + 500]
         rs = conn.execute(
             f"""
-            SELECT c.id, c.uid, c.platform, c.title, c.project, c.started_at, c.message_count,
+            SELECT c.id, c.uid, c.platform, c.title, c.project, c.started_at, c.ended_at, c.message_count,
               (SELECT COUNT(*) FROM v_blocks b WHERE b.conv_id = c.id AND b.type = 'attachment') AS attachment_count
             FROM v_conversations c WHERE c.id IN ({",".join("?" * len(chunk))})
             """,  # noqa: S608

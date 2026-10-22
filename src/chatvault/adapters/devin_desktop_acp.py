@@ -275,22 +275,35 @@ def _model(meta: dict) -> str | None:
     return None
 
 
+def _message_timestamp(message: dict) -> str | None:
+    """Per-message time. The only carrier in the source is `cognition.ai/timestamp`
+    in the `_meta` of the message's content items (no `_meta` exists on the
+    payload itself); a streamed thought can span several items, so the earliest
+    is the moment the message began. `payload.sourceEventTimestampMs` (tool
+    calls only) is the same instant and serves as the fallback. About half of
+    all rows carry neither — those stay NULL, never interpolated."""
+    payload = message.get("payload") or {}
+    content = payload.get("content")
+    items = content if isinstance(content, list) else [content] if isinstance(content, dict) else []
+    found = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        ts = (item.get("_meta") or {}).get("cognition.ai/timestamp")
+        dt = coerce_timestamp(ts) if ts else None
+        if dt:
+            found.append(dt)
+    if not found:
+        ms = payload.get("sourceEventTimestampMs")
+        if isinstance(ms, (int, float)) and not isinstance(ms, bool):
+            dt = coerce_timestamp(ms / 1000)
+            if dt:
+                found.append(dt)
+    return min(found).isoformat() if found else None
+
+
 def _message_timestamps(messages: list[dict]) -> list[str]:
-    out = []
-    for m in messages:
-        payload = m.get("payload") or {}
-        content = payload.get("content")
-        items = content if isinstance(content, list) else [content] if isinstance(content, dict) else []
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            meta = item.get("_meta") or {}
-            ts = meta.get("cognition.ai/timestamp")
-            if ts:
-                iso = _iso(ts)
-                if iso:
-                    out.append(iso)
-    return out
+    return [ts for ts in (_message_timestamp(m) for m in messages) if ts]
 
 
 def parse(path: Path) -> Iterator[dict]:
@@ -323,7 +336,7 @@ def parse(path: Path) -> Iterator[dict]:
                     continue
                 role = _ROLE_FOR_KIND.get(kind, "unknown")
                 msg_model = model if role == "assistant" else None
-                messages.append(make_message(idx, role, msg_model, None, blocks, raw=m))
+                messages.append(make_message(idx, role, msg_model, _message_timestamp(m), blocks, raw=m))
 
             if not messages:
                 continue

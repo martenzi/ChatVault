@@ -19,6 +19,7 @@ from chatvault import brief as brief_mod
 from chatvault import browse as browse_mod
 from chatvault import curation
 from chatvault import curation_io
+from chatvault import dates as dates_mod
 from chatvault import dedupe as dedupe_mod
 from chatvault import embeddings as embeddings_mod
 from chatvault import doctor as doctor_mod
@@ -534,6 +535,31 @@ def _ingest_live(config, *, adapter, dry_run, reprocess, embed, verbose) -> None
         conn.close()
 
 
+@app.command("flag-dates", rich_help_panel="Curation & Data Quality")
+def flag_dates(
+    apply: bool = typer.Option(False, "--apply", help="Write the tags. Without it: count only."),
+) -> None:
+    """Flag conversations whose dates are missing or untrustworthy — never corrects them.
+
+    review/no-end-date (the source has no last-message time) · review/naive-timestamp
+    (no Z / UTC offset, so the zone is unknown and time-of-day filters skip it) ·
+    review/implausible-date (before 2020 or in the future, e.g. epoch-zero).
+    Ingest applies the same tags to what it loads; this covers what is already stored."""
+    config = load_config()
+    conn = connect(config)
+    try:
+        found = dates_mod.classify(conn)
+        counts = dates_mod.flag(conn, apply=apply) if apply else {t: len(i) for t, i in found.items()}
+        for tag, ids in found.items():
+            by_platform = dates_mod.platform_breakdown(conn, ids)
+            detail = ", ".join(f"{p} {n}" for p, n in by_platform.items()) or "none"
+            console.print(f"{tag}: {counts[tag]} — {detail}")
+    finally:
+        conn.close()
+    if not apply:
+        console.print("[dim]dry run — add --apply to write the tags[/dim]")
+
+
 @app.command(rich_help_panel="Getting Data In")
 def reconcile(
     root: list[str] = typer.Option(None, "--root", help="Limit to specific tracked root_dir(s). Default: all tracked roots in scope."),
@@ -716,7 +742,7 @@ def audit(
 
         print(_json.dumps(audit_mod.to_dict(report), indent=2))
     else:
-        for group in "ABCDEF":
+        for group in "ABCDEFG":
             group_results = [r for r in report.results if r.group == group]
             if not group_results:
                 continue
@@ -871,27 +897,65 @@ def _render_ingest_report(summary, path: Path, *, dry_run: bool, verbose: bool, 
             )
 
 
+def _last_active_cell(r) -> str:
+    """Date of the last message; "same day" when it falls on the start date, "-"
+    when the source carries no end time (never filled in from the start)."""
+    ended = (r["ended_at"] if "ended_at" in r.keys() else None) or ""
+    if not ended:
+        return "-"
+    if ended[:10] == (r["started_at"] or "")[:10]:
+        return "same day"
+    return ended[:10]
+
+
 def _render_find_table(
     title: str, rows: list, total: int, *, mode: str | None = None, query: str | None = None,
     days: bool = False, group_by_platform: bool = False, footer: str | None = None,
 ) -> None:
     """`days` adds a "days ago" column (rows need `days_ago`); `group_by_platform`
     inserts a header row whenever the platform changes. Row numbers stay
-    sequential across the whole table either way, so `--pick` is unambiguous."""
+    sequential across the whole table either way, so `--pick` is unambiguous.
+
+    Every column but project and title is fixed-width, so a narrow terminal
+    squeezes only those two: the title gets what is left, and project is
+    dropped altogether when that would leave the title under ~28 characters."""
     from rich.markup import escape
 
     if mode is not None:
         console.print(f"mode: {mode} · query: {query!r}" if query else f"mode: {mode}")
-    table = Table(title=title, expand=False)
-    # `latest` rows (days=True) keep # and date from being ellipsised on narrow terminals.
-    table.add_column("#", justify="right", no_wrap=True, min_width=len(str(len(rows))) if days else None)
-    table.add_column("date", no_wrap=True, min_width=10 if days else None)
-    table.add_column("platform", no_wrap=True)
-    table.add_column("project", overflow="ellipsis", no_wrap=True, max_width=display_mod.PROJECT_MAX)
-    table.add_column("title", overflow="ellipsis", no_wrap=True, max_width=display_mod.TITLE_MAX)
+
+    fixed = {
+        "#": max(1, len(str(len(rows)))),
+        "date": 10,
+        "last active": 11,
+        "platform": max([8] + [len(r["platform"]) for r in rows]),
+        "msgs": max([4] + [len(str(r["message_count"])) for r in rows]),
+        "📎": 2,
+    }
     if days:
-        table.add_column("days ago", justify="right", no_wrap=True)
-    table.add_column("msgs", justify="right", no_wrap=True)
+        fixed["days ago"] = 8
+    overhead = 3 * (len(fixed) + 2) + 1  # one border + two pad chars per column, plus the right edge
+    room = console.width - overhead - sum(fixed.values())  # text space shared by project + title
+    title_max, project_max, show_project = display_mod.TITLE_MAX, display_mod.PROJECT_MAX, True
+    if room < title_max + project_max:
+        project_max = min(project_max, max(10, room // 3))
+        title_max = room - project_max
+        if title_max < 28:
+            show_project = False
+            title_max = max(16, room + 3)
+        title_max = min(title_max, display_mod.TITLE_MAX)
+
+    table = Table(title=title, expand=False)
+    table.add_column("#", justify="right", no_wrap=True, min_width=fixed["#"])
+    table.add_column("date", no_wrap=True, min_width=10)
+    table.add_column("last active", no_wrap=True, min_width=11)
+    table.add_column("platform", no_wrap=True, min_width=fixed["platform"])
+    if show_project:
+        table.add_column("project", overflow="ellipsis", no_wrap=True, max_width=project_max)
+    table.add_column("title", overflow="ellipsis", no_wrap=True, max_width=title_max)
+    if days:
+        table.add_column("days ago", justify="right", no_wrap=True, min_width=8)
+    table.add_column("msgs", justify="right", no_wrap=True, min_width=fixed["msgs"])
     table.add_column("📎", justify="right", no_wrap=True)
     current_platform = None
     for i, r in enumerate(rows, start=1):
@@ -900,19 +964,20 @@ def _render_find_table(
             n_here = sum(1 for x in rows if x["platform"] == current_platform)
             if i > 1:
                 table.add_section()
-            table.add_row("", "", f"[bold]{escape(current_platform)}[/bold]", "", f"[dim]{n_here} shown[/dim]",
-                          *([""] if days else []), "", "")
+            table.add_row("", "", "", f"[bold]{escape(current_platform)}[/bold]", *([""] if show_project else []),
+                          f"[dim]{n_here} shown[/dim]", *([""] if days else []), "", "")
         # semantic_search rows are plain v_conversations rows and don't carry
         # the attachment_count subquery browse.find() adds — degrade to
         # blank rather than KeyError.
         attachment_count = r["attachment_count"] if "attachment_count" in r.keys() else None
-        project = display_mod.truncate_display(r["project"], display_mod.PROJECT_MAX) if r["project"] else "—"
-        title_cell = display_mod.truncate_display(r["title"], display_mod.TITLE_MAX) if r["title"] else "Untitled"
+        project = display_mod.truncate_display(r["project"], project_max) if r["project"] else "—"
+        title_cell = display_mod.truncate_display(r["title"], title_max) if r["title"] else "Untitled"
         table.add_row(
             str(i),
             (r["started_at"] or "")[:10] or "-",
+            _last_active_cell(r),
             r["platform"],
-            escape(project),
+            *([escape(project)] if show_project else []),
             escape(title_cell),
             *([str(r["days_ago"]) if r["days_ago"] is not None else "-"] if days else []),
             str(r["message_count"]),
@@ -922,6 +987,16 @@ def _render_find_table(
     console.print(footer or f"showing {len(rows)} of {total} matches · saved as last query")
 
 
+_SINCE_HELP = "Conversation was STARTED on or after this date (ISO). For freshness use --active-since."
+_BEFORE_HELP = "Conversation was STARTED before this date (ISO, exclusive)."
+_ACTIVE_SINCE_HELP = (
+    "Conversation's LAST message is on or after this date (ISO, or 7d / 2w / 3m) — use this for freshness. "
+    "A still-running conversation's date advances when it is re-ingested; it is not a closure date."
+)
+_ACTIVE_BEFORE_HELP = "Conversation's LAST message is before this date (ISO, exclusive) — dormant since then."
+_ACTIVE_LAST_HELP = "Relative form of --active-since: 24h, 7d, 2w, 3m (30d), 1y (365d)."
+_MIN_SPAN_HELP = "Last message at least N days after the first — threads carried for a long time."
+_WHEN_HELP = "Started at night (00-06), morning (06-12), afternoon (12-18) or evening (18-24), local time. Naive-timestamp rows are left out."
 _LAST_HELP = "Relative window: 24h, 7d, 2w, 3m (30d), 1y (365d). Can't be combined with --since."
 _TODAY_HELP = "Only conversations started today (local date). Can't be combined with --since."
 _WEEK_HELP = "Shorthand for --last 7d."
@@ -934,6 +1009,14 @@ _SEARCH_EPILOG = (
     "  keyword   raw FTS5: chat*, a OR b, NEAR, -term   per BLOCK          no AI\n"
     "  search    meaning (local embeddings)             per conversation   AI"
 )
+
+
+def _resolve_active(active_since, active_last):
+    try:
+        return browse_mod.resolve_active_since(active_since, active_last)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
 
 
 def _resolve_since(since, last, today, week):
@@ -949,8 +1032,17 @@ def _resolve_since(since, last, today, week):
 def find(
     query: str = typer.Argument(None, help="Free text. Titles match first, body text (FTS) second. Omit for most recent."),
     platform: str = typer.Option(None, "--platform", help="Exact platform name, or a short alias: gpt, claude (matches claude_desktop + claude_code), ds, gem, wind."),
-    since: str = typer.Option(None, "--since", help="ISO date, inclusive."),
-    before: str = typer.Option(None, "--before", help="ISO date, exclusive."),
+    since: str = typer.Option(None, "--since", help=_SINCE_HELP),
+    before: str = typer.Option(None, "--before", help=_BEFORE_HELP),
+    active_since: str = typer.Option(None, "--active-since", help=_ACTIVE_SINCE_HELP),
+    active_before: str = typer.Option(None, "--active-before", help=_ACTIVE_BEFORE_HELP),
+    active_last: str = typer.Option(None, "--active-last", help=_ACTIVE_LAST_HELP),
+    min_span: float = typer.Option(None, "--min-span", help=_MIN_SPAN_HELP),
+    min_msgs: int = typer.Option(None, "--min-msgs", help="At least N messages."),
+    max_msgs: int = typer.Option(None, "--max-msgs", help="At most N messages."),
+    when: str = typer.Option(None, "--when", help=_WHEN_HELP),
+    weekday: bool = typer.Option(False, "--weekday", help="Started Monday-Friday (local time)."),
+    weekend: bool = typer.Option(False, "--weekend", help="Started Saturday-Sunday (local time)."),
     last: str = typer.Option(None, "--last", help=_LAST_HELP),
     today: bool = typer.Option(False, "--today", help=_TODAY_HELP),
     week: bool = typer.Option(False, "--week", help=_WEEK_HELP),
@@ -959,7 +1051,7 @@ def find(
     has_attachments: bool = typer.Option(False, "--has-attachments"),
     untagged: bool = typer.Option(False, "--untagged", help="Only conversations with no tags at all."),
     limit: int = typer.Option(50, "--limit"),
-    sort: str = typer.Option("recent", "--sort", help="recent | oldest | longest"),
+    sort: str = typer.Option("recent", "--sort", help="recent (last activity) | started | oldest | longest"),
     include_injected: bool = typer.Option(False, "--include-injected", help="Also match provider-injected context (memory blocks, date notes) hidden by default."),
 ) -> None:
     """Human-facing lister — find by title/date/platform, not uid. Keyword
@@ -971,6 +1063,7 @@ def find(
     is the quicker way). The query is matched as one exact phrase; for
     `a OR b`, prefix wildcards or NEAR use `chatvault keyword`."""
     since = _resolve_since(since, last, today, week)
+    active_since = _resolve_active(active_since, active_last)
     config = load_config()
     resolved_platform = platforms_mod.resolve_platform_alias(platform) if platform else None
     conn = connect(config)
@@ -980,6 +1073,8 @@ def find(
                 conn, query=query, platform=resolved_platform, since=since, before=before,
                 project=project, tag=tag, has_attachments=has_attachments, untagged=untagged, limit=limit, sort=sort,
                 include_injected=include_injected,
+                active_since=active_since, active_before=active_before, min_span=min_span,
+                min_msgs=min_msgs, max_msgs=max_msgs, when=when, weekday=weekday, weekend=weekend,
             )
         except ValueError as exc:
             console.print(f"[red]{exc}[/red]")
@@ -988,7 +1083,9 @@ def find(
             conn, config, rows,
             {"query": query, "platform": platform, "since": since, "before": before,
              "project": project, "tag": tag, "has_attachments": has_attachments, "untagged": untagged,
-             "limit": limit, "sort": sort},
+             "limit": limit, "sort": sort, "active_since": active_since, "active_before": active_before,
+             "min_span": min_span, "min_msgs": min_msgs, "max_msgs": max_msgs, "when": when,
+             "weekday": weekday, "weekend": weekend},
         )
     finally:
         conn.close()
@@ -1008,21 +1105,35 @@ def latest(
     platform: str = typer.Option(None, "--platform", help="Exact platform name, or a short alias: gpt, claude (matches claude_desktop + claude_code), ds, gem, wind."),
     project: str = typer.Option(None, "--project"),
     tag: str = typer.Option(None, "--tag", help="Exact tag name, or a prefix ending in '/**'."),
-    since: str = typer.Option(None, "--since", help="ISO date, inclusive."),
-    before: str = typer.Option(None, "--before", help="ISO date, exclusive."),
+    since: str = typer.Option(None, "--since", help=_SINCE_HELP),
+    before: str = typer.Option(None, "--before", help=_BEFORE_HELP),
+    active_since: str = typer.Option(None, "--active-since", help=_ACTIVE_SINCE_HELP),
+    active_before: str = typer.Option(None, "--active-before", help=_ACTIVE_BEFORE_HELP),
+    active_last: str = typer.Option(None, "--active-last", help=_ACTIVE_LAST_HELP),
+    min_span: float = typer.Option(None, "--min-span", help=_MIN_SPAN_HELP),
+    min_msgs: int = typer.Option(None, "--min-msgs", help="At least N messages."),
+    max_msgs: int = typer.Option(None, "--max-msgs", help="At most N messages."),
+    when: str = typer.Option(None, "--when", help=_WHEN_HELP),
+    weekday: bool = typer.Option(False, "--weekday", help="Started Monday-Friday (local time)."),
+    weekend: bool = typer.Option(False, "--weekend", help="Started Saturday-Sunday (local time)."),
     last: str = typer.Option(None, "--last", help=_LAST_HELP),
     today: bool = typer.Option(False, "--today", help=_TODAY_HELP),
     week: bool = typer.Option(False, "--week", help=_WEEK_HELP),
-    by_ingest: bool = typer.Option(False, "--by-ingest", help="Order by when ChatVault ingested it, not when the conversation started. 'days ago' follows the same column."),
+    by_ingest: bool = typer.Option(False, "--by-ingest", help="Order by when ChatVault ingested it, not by last activity. 'days ago' follows the same column."),
+    by_started: bool = typer.Option(False, "--by-started", help="Order by when the conversation started, not by last activity. 'days ago' follows the same column."),
 ) -> None:
-    """The most recent conversations — no query, just recency. The "days ago"
-    column is plain fact (days since the conversation started, or since
-    ingest with --by-ingest), so `latest --per-platform 3` doubles as a
+    """The most recently ACTIVE conversations — no query, just recency. The
+    "days ago" column is plain fact (days since the last message; since the
+    start with --by-started, since ingest with --by-ingest), so `latest --per-platform 3` doubles as a
     staleness check. Numbers the results and caches them so `show --pick` /
     `export --pick` work straight after. Prints a table.
 
     For a custom quick-access list of your own, see `chatvault view save`."""
     since = _resolve_since(since, last, today, week)
+    active_since = _resolve_active(active_since, active_last)
+    if by_ingest and by_started:
+        console.print("[red]--by-ingest and --by-started can't be combined — pick one[/red]")
+        raise typer.Exit(code=1)
     if n is not None and n < 1:
         console.print("[red]N must be 1 or more[/red]")
         raise typer.Exit(code=1)
@@ -1035,7 +1146,9 @@ def latest(
         try:
             rows, total = browse_mod.latest(
                 conn, limit=n, per_platform=per_n, platform=resolved_platform, since=since,
-                before=before, project=project, tag=tag, by_ingest=by_ingest,
+                before=before, project=project, tag=tag, by_ingest=by_ingest, by_started=by_started,
+                active_since=active_since, active_before=active_before, min_span=min_span,
+                min_msgs=min_msgs, max_msgs=max_msgs, when=when, weekday=weekday, weekend=weekend,
             )
         except ValueError as exc:
             console.print(f"[red]{exc}[/red]")
@@ -1043,14 +1156,16 @@ def latest(
         browse_mod.save_result_cache(
             conn, config, rows,
             {"query": None, "platform": platform, "since": since, "before": before, "project": project,
-             "tag": tag, "limit": n, "per_platform": per_n, "by_ingest": by_ingest, "mode": "latest"},
+             "tag": tag, "limit": n, "per_platform": per_n, "by_ingest": by_ingest, "by_started": by_started, "mode": "latest",
+             "active_since": active_since, "active_before": active_before, "min_span": min_span,
+             "min_msgs": min_msgs, "max_msgs": max_msgs, "when": when, "weekday": weekday, "weekend": weekend},
         )
     finally:
         conn.close()
 
     grouped = per_n is not None
     n_platforms = len({r["platform"] for r in rows})
-    title = "latest" + (f" · {per_n} per platform" if grouped else "") + (" · by ingest" if by_ingest else "")
+    title = "latest" + (f" · {per_n} per platform" if grouped else "") + (" · by ingest" if by_ingest else " · by start" if by_started else "")
     footer = (
         f"showing {len(rows)} from {n_platforms} platforms ({total} match) · saved as last query"
         if grouped else None
@@ -1835,8 +1950,9 @@ def keyword(
     platform: str = typer.Option(None, "--platform", help="Exact platform name, or a short alias: gpt, claude (matches claude_desktop + claude_code), ds, gem, wind."),
     type_: str = typer.Option(None, "--type", help="Only blocks of this type (text, thinking, tool_use, ...)."),
     limit: int = typer.Option(20, "--limit"),
-    since: str = typer.Option(None, "--since", help="ISO date, inclusive — conversations started on/after."),
-    before: str = typer.Option(None, "--before", help="ISO date, exclusive — conversations started before."),
+    since: str = typer.Option(None, "--since", help=_SINCE_HELP),
+    before: str = typer.Option(None, "--before", help=_BEFORE_HELP),
+    active_since: str = typer.Option(None, "--active-since", help=_ACTIVE_SINCE_HELP),
     last: str = typer.Option(None, "--last", help=_LAST_HELP),
     today: bool = typer.Option(False, "--today", help=_TODAY_HELP),
     week: bool = typer.Option(False, "--week", help=_WEEK_HELP),
@@ -1849,13 +1965,14 @@ def keyword(
     Row numbers are blocks; `--pick`/`show` resolve to the conversation
     containing that block (the `conv` column groups rows by conversation)."""
     since = _resolve_since(since, last, today, week)
+    active_since = _resolve_active(active_since, None)
     config = load_config()
     resolved = platforms_mod.resolve_platform_alias(platform) if platform else None
     conn = connect(config)
     try:
         try:
             totals: dict = {}
-            rows = search_mod.search(conn, query, platform=resolved, type_=type_, limit=limit, include_injected=include_injected, since=since, before=before, totals=totals)
+            rows = search_mod.search(conn, query, platform=resolved, type_=type_, limit=limit, include_injected=include_injected, since=since, before=before, totals=totals, active_since=active_since)
         except sqlite3.OperationalError as exc:
             console.print(f"[red]FTS5 syntax error: {exc}. Quote phrases with double quotes, e.g. \"AI/ML\".[/red]")
             raise typer.Exit(code=1)
@@ -1875,13 +1992,14 @@ def keyword(
     table.add_column("#", justify="right", no_wrap=True)
     table.add_column("conv", justify="right", no_wrap=True)
     table.add_column("platform", no_wrap=True)
+    table.add_column("last active", no_wrap=True, min_width=11)
     table.add_column("type", no_wrap=True)
     table.add_column("conversation", overflow="ellipsis", max_width=display_mod.TITLE_MAX)
     table.add_column("snippet")
     conv_no: dict[int, int] = {}
     for i, r in enumerate(rows, start=1):
         n = conv_no.setdefault(r["conv_id"], len(conv_no) + 1)
-        table.add_row(str(i), str(n), r["platform"], r["type"], escape(r["title"] or "Untitled"), escape(" ".join((r["snippet"] or "").split())))
+        table.add_row(str(i), str(n), r["platform"], _last_active_cell(r), r["type"], escape(r["title"] or "Untitled"), escape(" ".join((r["snippet"] or "").split())))
     console.print(table)
     console.print(
         f"showing {len(rows)} of {totals['blocks']} matching blocks "

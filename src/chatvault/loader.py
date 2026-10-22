@@ -338,6 +338,31 @@ def _insert_messages_and_blocks(conn: sqlite3.Connection, conv_id: int, cir: dic
     return message_count, block_count, char_count
 
 
+def _backfill_timestamps(conn: sqlite3.Connection, conv_id: int, cir: dict) -> int:
+    """Like `_backfill_attachments`: content_hash ignores timestamps, so an
+    adapter fix that starts extracting them lands as 'identical content'.
+    Fills gaps only — a message `created_at` or a conversation
+    `started_at`/`ended_at` that is already set is never overwritten, and a
+    value the source does not carry stays NULL (nothing is derived or
+    invented). Returns the number of values filled."""
+    filled = 0
+    stored = {
+        r["idx"]: (r["id"], r["created_at"])
+        for r in conn.execute("SELECT id, idx, created_at FROM messages WHERE conv_id = ?", (conv_id,))
+    }
+    for msg in cir["messages"]:
+        row = stored.get(msg["idx"])
+        if row and row[1] is None and msg.get("created_at"):
+            conn.execute("UPDATE messages SET created_at = ? WHERE id = ?", (msg["created_at"], row[0]))
+            filled += 1
+    conv = conn.execute("SELECT started_at, ended_at FROM conversations WHERE id = ?", (conv_id,)).fetchone()
+    for col in ("started_at", "ended_at"):
+        if conv[col] is None and cir.get(col):
+            conn.execute(f"UPDATE conversations SET {col} = ? WHERE id = ?", (cir[col], conv_id))  # noqa: S608
+            filled += 1
+    return filled
+
+
 def reprocess_conversation(
     conn: sqlite3.Connection,
     cir: dict,
@@ -352,19 +377,22 @@ def reprocess_conversation(
     if native_id is not None:
         existing = next((row for row in rows if row["native_id"] == native_id), None)
         if existing is None:
-            return load_conversation(conn, cir, source_file_id)
+            return load_conversation(conn, cir, source_file_id, backfill_timestamps=True)
     elif position < len(rows) and rows[position]["native_id"] is None:
         existing = rows[position]
     else:
-        return load_conversation(conn, cir, source_file_id)
+        return load_conversation(conn, cir, source_file_id, backfill_timestamps=True)
 
     conv_id = existing["id"]
     hashes = _compute_hashes(cir)
     if existing["content_hash"] == hashes["content_hash"]:
         backfilled = _backfill_attachments(conn, conv_id, cir)
+        stamped = _backfill_timestamps(conn, conv_id, cir)
         detail = "identical content already present"
         if backfilled:
             detail += f"; backfilled attachment metadata on {backfilled} block(s)"
+        if stamped:
+            detail += f"; backfilled {stamped} timestamp(s)"
         return LoadResult("noop", conv_id, existing["uid"], detail)
 
     messages = conn.execute(
@@ -493,7 +521,11 @@ def _flag_ambiguous(conn: sqlite3.Connection, conv_id: int, now: str) -> None:
     )
 
 
-def load_conversation(conn: sqlite3.Connection, cir: dict, source_file_id: int) -> LoadResult:
+def load_conversation(
+    conn: sqlite3.Connection, cir: dict, source_file_id: int, *, backfill_timestamps: bool = False
+) -> LoadResult:
+    """`backfill_timestamps` (set only by `--reprocess`) fills NULL timestamps on an
+    identical, already-stored conversation; a normal ingest never touches it."""
     hashes = _compute_hashes(cir)
     content_hash = hashes["content_hash"]
     head_hash = hashes["head_hash"]
@@ -529,9 +561,12 @@ def load_conversation(conn: sqlite3.Connection, cir: dict, source_file_id: int) 
         identical = existing
     if identical is not None:
         backfilled = _backfill_attachments(conn, identical["id"], cir)
+        stamped = _backfill_timestamps(conn, identical["id"], cir) if backfill_timestamps else 0
         detail = "identical content already present"
         if backfilled:
             detail += f"; backfilled attachment metadata on {backfilled} block(s)"
+        if stamped:
+            detail += f"; backfilled {stamped} timestamp(s)"
         return LoadResult("noop", identical["id"], identical["uid"], detail)
 
     n = len(msg_hashes)
