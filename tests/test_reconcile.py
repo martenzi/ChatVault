@@ -204,3 +204,23 @@ def test_reconcile_flags_changed_frozen_file(vault, conn):
     staged.write_text("{}\n")
     report = reconcile.reconcile(conn, kind="frozen")
     assert report.changed == 1 and report.newly_missing == 0
+
+
+def test_reconcile_checks_rows_with_no_recorded_root_dir(vault, conn):
+    """Rows ingested before root_dir existed (root_dir NULL) used to be invisible
+    to reconcile: their files could vanish or move without a trace."""
+    staged, _ = _stage_live_source(vault, conn)
+    conn.execute("UPDATE source_files SET root_dir = NULL, kind = 'frozen'")
+    conn.commit()
+    dest = vault.raw_dir / "10_ingested" / "claude_code" / staged.name
+    dest.parent.mkdir(parents=True)
+    staged.rename(dest)
+
+    moved = reconcile.reconcile(conn, kind="all", search_dirs=[vault.raw_dir])
+    assert moved.moved == 1 and moved.newly_missing == 0
+    assert conn.execute("SELECT path FROM source_files").fetchone()["path"] == str(dest)
+
+    dest.unlink()
+    gone = reconcile.reconcile(conn, kind="all", search_dirs=[vault.raw_dir])
+    assert gone.newly_missing == 1
+    assert conn.execute("SELECT presence FROM source_files").fetchone()["presence"] == "missing"

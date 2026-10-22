@@ -104,10 +104,15 @@ def reconcile(
             sha_cache[p] = hashing.file_sha256(p)
         return sha_cache[p]
 
-    for root_dir in root_dirs:
+    # Rows ingested before root_dir was recorded have none and would otherwise
+    # never be looked at: their files can vanish or move unseen. They are
+    # checked as one extra group (only when no --root narrows the scope), found
+    # again by content under search_dirs.
+    groups: list[str | None] = [*root_dirs, *([None] if not roots else [])]
+    for root_dir in groups:
         q = ("SELECT id, path, sha256, bytes, kind, adapter, presence FROM source_files "
-             "WHERE root_dir = ? AND presence != 'retired'")
-        qparams: list[str] = [root_dir]
+             "WHERE presence != 'retired' AND " + ("root_dir IS NULL" if root_dir is None else "root_dir = ?"))
+        qparams: list[str] = [] if root_dir is None else [root_dir]
         if kind != "all":
             q += " AND kind = ?"
             qparams.append(kind)
@@ -117,7 +122,7 @@ def reconcile(
         indexes: list[tuple[Path, dict[int, list[Path]]]] = []
         if gone and move_scan:
             t0 = time.monotonic()
-            for d in [Path(root_dir), *extra]:
+            for d in ([Path(root_dir)] if root_dir else []) + extra:
                 if all(d != seen for seen, _ in indexes):
                     indexes.append((d, _stat_index(d)))
             report.move_scan_seconds += time.monotonic() - t0
