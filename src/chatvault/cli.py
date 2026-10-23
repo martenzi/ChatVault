@@ -53,7 +53,7 @@ sources_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Trac
 curation_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Export/import the curation layer (tags, annotations, exclusions, views).")
 attachments_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Browse and curate attachments.")
 projects_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Browse projects (Claude Projects, etc.).")
-stash_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Second Brain v0 — the deliberate keep gesture (docs/40_SPEC_second_brain_v0.md).")
+stash_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Second Brain v0 — the deliberate keep gesture.")
 tag_app.add_typer(tag_rule_app, name="rule")
 app.add_typer(tag_app, name="tag", rich_help_panel="Tags & Views")
 app.add_typer(view_app, name="view", rich_help_panel="Tags & Views")
@@ -190,11 +190,11 @@ def backup(
 
 @app.command(rich_help_panel="Getting Data In")
 def ledger(
-    markdown: Path = typer.Option(None, "--markdown", help="Regenerate this doc's '## 1. What's ingested' section in place (e.g. docs/05_INGESTION_LEDGER.md)."),
+    markdown: Path = typer.Option(None, "--markdown", help="Regenerate this doc's '## 1. What's ingested' section in place."),
     stale: bool = typer.Option(False, "--stale", help="List server_side sources not re-exported in --days days."),
     days: int = typer.Option(30, "--days", help="With --stale, staleness threshold in days."),
 ) -> None:
-    """What's in the vault, live from source_files — see docs/05_INGESTION_LEDGER.md §5.
+    """What's in the vault, live from source_files.
     No flags: print the table. --markdown: regenerate a doc's ledger section.
     --stale: which server-side exports (claude_desktop/chatgpt/grok/gemini/deepseek) need refreshing. Prints a table; --markdown writes to a doc file instead."""
     config = load_config()
@@ -355,7 +355,7 @@ def stash_drop(n: int = typer.Argument(..., help="Row number from `stash list` (
 
 def _pack_impl(pick: str, out: Path | None) -> None:
     """Shared by `pack` and the hidden `brief` alias
-    (docs/51_SPEC_brain_parity_and_naming.md §1.3/§1.5) — pure string
+    (Second Brain parity spec §1.3/§1.5) — pure string
     assembly (why + source reference + rendered body), no AI model."""
     config = load_config()
     conn = connect(config)
@@ -871,8 +871,7 @@ def audit_shapes(
     out: Path = typer.Option(None, "--out", help="Write the full report as markdown here. Default: print to stdout."),
 ) -> None:
     """Read-only diagnostic: walks every key path of every raw_json record in
-    scope to full depth (no LIMIT, no sampling — see docs/50_SPEC_ingestion_fidelity_v1.md
-    §1.2/§4.2). Ranks paths by total character volume and cross-tabs shape
+    scope to full depth (no LIMIT, no sampling). Ranks paths by total character volume and cross-tabs shape
     signatures, so adapter fixes are made from evidence, not guesswork.
     --mode reasoning runs the §4.2b reasoning-locator sweep for one platform
     across every block regardless of current type; never writes to the DB."""
@@ -2329,7 +2328,7 @@ def sources_unclaimed(
 def sources_status() -> None:
     """One row per source (not per file): what exists, what is in the vault, and why anything is not.
     Counts are live-scoped. Exits non-zero if a chat-shaped file under raw/ is unaccounted for
-    (not ingested and no reason recorded in docs/source_registry.md)."""
+    (not ingested and no reason recorded in the source registry)."""
     from chatvault import source_registry
 
     config = load_config()
@@ -2670,7 +2669,7 @@ def projects_list() -> None:
 @projects_app.command("backfill")
 def projects_backfill() -> None:
     """Promote `conversations.project` labels into real `projects` rows,
-    keyed on normalised workspace path (docs/FIX_project_identity.md).
+    keyed on normalised workspace path.
     Idempotent — safe to re-run after every ingest. Prints status lines."""
     config = load_config()
     _auto_backup(config, "pre-project-identity")

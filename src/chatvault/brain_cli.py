@@ -29,7 +29,7 @@ from chatvault.config import load_config
 
 console = Console()
 
-brain_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Second Brain v2 — a portable, curated personal knowledge base (docs/45_SPEC_brain_v2_full.md).")
+brain_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Second Brain v2 — a portable, curated personal knowledge base.")
 
 add_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Add a new entry, tag, alias, collection, rel type, or kind.")
 add_to_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Add item(s) to a collection.")
@@ -56,7 +56,7 @@ curation_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Exp
 attachments_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Attach and browse local files on a Brain entry.")
 graph_app = typer.Typer(
     no_args_is_help=True, add_completion=False,
-    help="Neo4j projection layer, built but not run against a real instance (docs/51_SPEC_brain_parity_and_naming.md §7 non-goal).",
+    help="Neo4j projection layer, built but not run against a real instance.",
 )
 copy_app = typer.Typer(
     no_args_is_help=True, add_completion=False,
@@ -1281,8 +1281,7 @@ def jot_cmd(
     text: str = typer.Argument(None, help="Quick, unstructured text — no --why needed. Omit and pass --file instead to jot a file's contents."),
     file: Path = typer.Option(None, "--file", help="Read the jot's text from this file instead of the command line (the 'drop a file' capture path)."),
 ) -> None:
-    """Near-zero-friction capture (docs/46_AUDIT_second_brain_landscape.md
-    §5): lands in the inbox, not the Brain proper — review with `brain
+    """Near-zero-friction capture: lands in the inbox, not the Brain proper — review with `brain
     inbox`, then `accept`/`reject`. Prints one status line."""
     if text is None and file is None:
         console.print("[red]pass some text, or --file, with a path[/red]")
