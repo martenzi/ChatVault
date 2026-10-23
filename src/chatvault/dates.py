@@ -116,7 +116,11 @@ def capture_delay(conn: sqlite3.Connection) -> list[dict]:
     first ingested measure "when the archive started", not staleness, and are left
     out. Conversations with a naive `ended_at` are left out too (the zone is
     unknown, so a lag in hours would be a guess)."""
-    live = [r["platform"] for r in conn.execute("SELECT DISTINCT platform FROM source_files WHERE kind = 'live' ORDER BY 1")]
+    # live = registered in live_roots, or marked kind='live' (direct sources)
+    live = sorted({
+        *(r[0] for r in conn.execute("SELECT DISTINCT source FROM live_roots WHERE active = 1")),
+        *(r[0] for r in conn.execute("SELECT DISTINCT platform FROM source_files WHERE kind = 'live'")),
+    })
     out = []
     for platform in live:
         first = conn.execute("SELECT MIN(ingested_at) FROM conversations WHERE platform = ?", (platform,)).fetchone()[0]

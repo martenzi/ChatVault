@@ -457,11 +457,13 @@ def _unique_dest(dest: Path) -> Path:
         i += 1
 
 
-def run_intake(conn: sqlite3.Connection, config, *, apply: bool, ingest_fn) -> list[IntakeItem]:
+def run_intake(conn: sqlite3.Connection, config, *, apply: bool, ingest_fn, subdir: str | None = None) -> list[IntakeItem]:
     """Ingest everything in 00_inbox/, verify, then move to 10_ingested/.
 
     `ingest_fn(path)` ingests one file (or directory) and returns the
-    IngestSummary; injected so tests can drive it."""
+    IngestSummary; injected so tests can drive it. `subdir` limits the pass to
+    00_inbox/<subdir>/ (used by `ingest --live` so it files only the snapshot
+    it just extracted and never sweeps up anything else sitting in the inbox)."""
     raw = config.raw_dir
     inbox = raw / INBOX
     if apply:
@@ -469,7 +471,8 @@ def run_intake(conn: sqlite3.Connection, config, *, apply: bool, ingest_fn) -> l
     items: list[IntakeItem] = []
     today = datetime.now().strftime("%Y-%m-%d")
 
-    for p in sorted(x for x in inbox.rglob("*") if x.is_file() and x.name not in JUNK_NAMES) if inbox.is_dir() else []:
+    scan = inbox / subdir if subdir else inbox
+    for p in sorted(x for x in scan.rglob("*") if x.is_file() and x.name not in JUNK_NAMES) if scan.is_dir() else []:
         mod = adapters.detect(p) or adapters.detect_projects(p) or adapters.detect_artifacts(p)
         if mod is None:
             if looks_like_chat(p):

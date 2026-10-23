@@ -199,6 +199,30 @@ See `10_CONCEPTS_label_tag_project.md`.
 
 ---
 
+## D18 — Derive facts, declare intentions
+
+**Chosen:** a *fact* is computable from data (where a file was found, when it was ingested). An *intention* is not (which places to re-scan, what is out of scope, which duplicates are acceptable). Intentions are declared in an explicit registry; they are never inferred from facts. `ingest --live` reads the `live_roots` table, not `GROUP BY root_dir` over `source_files`, and `source_files.root_dir` is provenance only.
+
+**Rejected:** keep computing live roots from `source_files` and filter out the bad ones — filtering treats symptoms, and the next accident in how a file was ingested creates a new phantom root.
+
+**Why:** the derived list produced three defects at once. A staged snapshot marked `live` made `--live` re-read an extract that can never change, so Devin was never refreshed. A wrong-case path (`Chatvault` for `ChatVault`; APFS accepts both) became a second root, and a single `live` row under it made `--live` scan the whole `raw/` tree. And about 70 nested project folders each registered as their own root. The same pattern is why four sources sat un-ingested for months before `source_registry.md` declared them.
+
+**How:** `src/chatvault/live_roots.py`, migration 016, `chatvault live-roots`. A source is *direct* (a directory that grows) or *extracted* (a SQLite store snapshotted by an `extract_cmd` into `raw/00_inbox/<source>/`, then ingested and filed by `intake`). A staged snapshot is `frozen` by nature; `live` belongs to the store it came from. Staleness is measured against the live store. Every stored path goes through `paths.canonical()`, and a trigger rejects a `root_dir` that differs from an existing one only by letter case.
+
+---
+
+## D19 — A spec's claim about existing code or schema is a hypothesis until verified
+
+**Chosen:** a spec that says an existing field "already holds what we need" must state what that field was created to mean and confirm the overlap for every case. Claims about current behaviour are marked as hypotheses and checked before building on them — the same discipline D14 applies to claims about data.
+
+**Rejected:** rely on review to catch it — the same mistake happened twice.
+
+**Why:** `source_files.kind='live'` was built to answer "does this go stale?" and was reused as the input to "where do I read from?". The two coincide for direct sources and diverge for extracted ones. Separately, a spec once asserted that a bare `find` returned 50 rows cheaply when it loaded the whole table.
+
+**How:** specs list "claims to verify" with the command that checks each; a claim that fails is reported, not worked around.
+
+---
+
 ## Deliberately not decided
 
 Open by choice, not oversight:

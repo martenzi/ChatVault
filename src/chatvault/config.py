@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from chatvault.paths import canonical
+
 
 def _load_dotenv(path: Path) -> None:
     if not path.exists():
@@ -99,7 +101,9 @@ class Config:
 
 def load_config() -> Config:
     _load_dotenv(Path.cwd() / ".env")
-    root = Path(os.environ.get("CHATVAULT_ROOT", str(Path.cwd()))).expanduser().resolve()
+    # canonical(): a wrong-case CHATVAULT_ROOT (APFS accepts it) must not leak a
+    # second spelling of the same directory into source_files.root_dir.
+    root = Path(canonical(os.environ.get("CHATVAULT_ROOT", str(Path.cwd()))))
     backup_dir_str = os.environ.get("CHATVAULT_BACKUP_DIR")
     archive_dir_str = os.environ.get("CHATVAULT_ARCHIVE_DIR")
     attachment_dir_str = os.environ.get("CHATVAULT_ATTACHMENT_DIR")

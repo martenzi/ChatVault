@@ -183,7 +183,7 @@ def main() -> int:
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=Path(__file__).resolve().parent.parent / "raw" / "antigravity",
+        default=Path(__file__).resolve().parent.parent / "raw" / "00_inbox" / "antigravity",
     )
     args = parser.parse_args()
 

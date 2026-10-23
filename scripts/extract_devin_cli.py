@@ -217,8 +217,8 @@ def main() -> int:
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=Path(__file__).resolve().parent.parent / "raw" / "devin_cli",
-        help="raw/devin_cli root — a dated subdirectory is created under it",
+        default=Path(__file__).resolve().parent.parent / "raw" / "00_inbox" / "devin_cli",
+        help="raw/00_inbox/devin_cli root — a dated subdirectory is created under it",
     )
     args = parser.parse_args()
 

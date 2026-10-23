@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from chatvault import adapters, hashing, ledger, loader
+from chatvault import adapters, hashing, ledger, loader, paths
 from chatvault.config import Config
 
 KNOWN_EXTENSIONS = {".json", ".jsonl"}
@@ -303,7 +303,8 @@ def ingest_path(
         if not targets_exclusions_dir:
             exclude_dir = candidate_exclude_dir
 
-    root_dir = str((path if path.is_dir() else path.parent).resolve())
+    path = Path(paths.canonical(path))
+    root_dir = str(path if path.is_dir() else path.parent)
     summary = IngestSummary()
     touched_conv_ids: list[int] = []
 
