@@ -27,6 +27,24 @@ PLAUSIBLE_FROM = datetime(2020, 1, 1, tzinfo=timezone.utc)
 _FUTURE_SLACK = timedelta(days=1)
 
 
+def humanize_age(seconds: float | None) -> str:
+    """Whole-unit age for tables: '<1m', '45m', '2h 10m', '3d 5h', '1w 4d' (no decimals)."""
+    if seconds is None:
+        return "—"
+    s = max(0, int(seconds))
+    m, h, d = s // 60, s // 3600, s // 86400
+    if s < 60:
+        return "<1m"
+    if h < 1:
+        return f"{m}m"
+    if d < 1:
+        return f"{h}h {m % 60}m" if m % 60 else f"{h}h"
+    if d < 7:
+        return f"{d}d {h % 24}h" if h % 24 else f"{d}d"
+    w = d // 7
+    return f"{w}w {d % 7}d" if d % 7 else f"{w}w"
+
+
 def _parse(ts: str | None) -> datetime | None:
     if not ts:
         return None

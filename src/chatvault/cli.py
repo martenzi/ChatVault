@@ -511,7 +511,7 @@ def _ingest_live(config, *, adapter, dry_run, reprocess, embed, verbose) -> None
         now = datetime.now(timezone.utc).timestamp()
 
         def _age(ts: float | None) -> str:
-            return "—" if ts is None else f"{max(0.0, (now - ts) / 86400):.1f}d"
+            return "—" if ts is None else f"{dates_mod.humanize_age(now - ts)} ago"
 
         table = Table(title="live sources")
         for col in ("source", "live store", "extract", "last ingest", "data age", "state"):

@@ -263,3 +263,16 @@ def test_normalise_collapses_duplicate_roots_and_freezes_snapshots(vault, conn, 
     # the guards are back
     with pytest.raises(sqlite3.IntegrityError):
         _add(conn, 9, f"{wrong}/z.jsonl", wrong)
+
+
+def test_humanize_age_uses_whole_units():
+    from chatvault.dates import humanize_age
+
+    assert humanize_age(None) == "—"
+    assert humanize_age(20) == "<1m"
+    assert humanize_age(45 * 60) == "45m"
+    assert humanize_age(2 * 3600 + 10 * 60) == "2h 10m"
+    assert humanize_age(5 * 3600) == "5h"
+    assert humanize_age(86400 * 3 + 5 * 3600) == "3d 5h"
+    assert humanize_age(86400 * 11.9) == "1w 4d"
+    assert humanize_age(86400 * 14) == "2w"
