@@ -114,8 +114,8 @@ conversation data is ever committed — the vault directories are gitignored.
 
 ## Design decisions worth reading
 
-The calls that shaped the codebase, kept short — full versions with rejected
-alternatives in [`docs/02_DECISIONS.md`](docs/02_DECISIONS.md):
+The calls that shaped the codebase, kept short — the full design picture is
+in [`docs/architecture.md`](docs/architecture.md):
 
 - **RAW exports are immutable; everything else is a projection.** The
   database, renders, and graph can be rebuilt from source at any time. Source
@@ -189,10 +189,10 @@ want a database underneath.
 
 ## Documentation
 
-- [`docs/02_DECISIONS.md`](docs/02_DECISIONS.md) — the 14 decisions, each with
-  the rejected alternative
-- [`docs/00_README.md`](docs/00_README.md) — index of specs, concepts, and
-  historical architecture docs
+- [`docs/architecture.md`](docs/architecture.md) — schema, RAW/catalog model,
+  dedupe, adapters — how it works internally
+- [`docs/concepts.md`](docs/concepts.md) — labels vs tags vs projects: the
+  domain model you meet in the UI
 
 ## License
 
