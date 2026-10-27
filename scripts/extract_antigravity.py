@@ -185,6 +185,7 @@ def main() -> int:
         type=Path,
         default=Path(__file__).resolve().parent.parent / "raw" / "00_inbox" / "antigravity",
     )
+    parser.add_argument("--host", default=None, help="Machine label for a remote pull (docs/specs/77); omit for local.")
     args = parser.parse_args()
 
     roots = {"ide": args.ide_dir, "cli": args.cli_dir}

@@ -20,6 +20,19 @@ def _load_dotenv(path: Path) -> None:
         os.environ.setdefault(key, value)
 
 
+REPLICA_MESSAGE = (
+    "This is a read-only replica. Run it on the Mac: "
+    "`ssh mac-tailscale 'cd ~/ChatVault && .venv/bin/chatvault …'`"
+)
+
+
+class ReplicaWriteRefused(RuntimeError):
+    """A write was attempted on a copy marked CHATVAULT_ROLE=replica."""
+
+    def __init__(self, action: str = "") -> None:
+        super().__init__(f"{action}: {REPLICA_MESSAGE}" if action else REPLICA_MESSAGE)
+
+
 @dataclass(frozen=True)
 class Config:
     root: Path
@@ -29,6 +42,20 @@ class Config:
     backup_dir_override: Path | None = None
     archive_dir_override: Path | None = None
     attachment_dir_override: Path | None = None
+    # docs/specs/77: this machine's label in source_files.host, and whether this
+    # copy may write. 'replica' = a synced read-only copy (Fedora).
+    machine: str = "mac"
+    role: str = "writer"
+
+    @property
+    def is_replica(self) -> bool:
+        return self.role == "replica"
+
+    def require_writer(self, action: str) -> None:
+        """Refuse up front, before any file or row is touched. The read-only
+        connection (db.connect) is the backstop for writes not routed here."""
+        if self.is_replica:
+            raise ReplicaWriteRefused(action)
 
     @property
     def raw_dir(self) -> Path:
@@ -116,4 +143,6 @@ def load_config() -> Config:
         backup_dir_override=Path(backup_dir_str).expanduser().resolve() if backup_dir_str else None,
         archive_dir_override=Path(archive_dir_str).expanduser().resolve() if archive_dir_str else None,
         attachment_dir_override=Path(attachment_dir_str).expanduser().resolve() if attachment_dir_str else None,
+        machine=os.environ.get("CHATVAULT_MACHINE", "mac"),
+        role=os.environ.get("CHATVAULT_ROLE", "writer"),
     )

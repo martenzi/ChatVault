@@ -40,10 +40,38 @@ from chatvault import sources as sources_mod
 from chatvault import stash as stash_mod
 from chatvault import tags as tags_mod
 from chatvault import verify as verify_mod
-from chatvault.config import load_config
+from chatvault.config import REPLICA_MESSAGE, ReplicaWriteRefused, load_config
 from chatvault.db import connect, migrate
 
-app = typer.Typer(no_args_is_help=True, add_completion=False)
+
+class _GuardedTyper(typer.Typer):
+    """On a replica (CHATVAULT_ROLE=replica) the databases open read-only; a
+    write that reaches SQLite surfaces as the replica message, not a traceback
+    (docs/specs/77 §7)."""
+
+    def __call__(self, *args, **kwargs):
+        try:
+            return super().__call__(*args, **kwargs)
+        except ReplicaWriteRefused as exc:
+            Console(stderr=True).print(f"[red]{exc}[/red]")
+            sys.exit(1)
+        except sqlite3.OperationalError as exc:
+            if "readonly database" not in str(exc) or not load_config().is_replica:
+                raise
+            Console(stderr=True).print(f"[red]{REPLICA_MESSAGE}[/red]")
+            sys.exit(1)
+
+
+def _require_writer(config, action: str) -> None:
+    """Refuse up front on a replica (docs/specs/77 §7): message, exit 1, nothing touched."""
+    try:
+        config.require_writer(action)
+    except ReplicaWriteRefused as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+
+
+app = _GuardedTyper(no_args_is_help=True, add_completion=False)
 tag_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Manage tags.")
 tag_rule_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Automatic tagging rules, applied on ingest.")
 view_app = typer.Typer(no_args_is_help=True, add_completion=False, help="Manage saved views.")
@@ -467,18 +495,25 @@ def ingest(
     reprocess: bool = typer.Option(False, "--reprocess", help="Bypass the file-level dedup and re-parse already-seen files. Existing conversations still resolve as noop by content_hash — this is for backfilling metadata an adapter fix now extracts (e.g. attachments) without ever duplicating rows."),
     embed: bool = typer.Option(True, "--embed/--no-embed", help="Embed newly inserted/superseded conversations for semantic search (spec: 'incrementally on new ingests'). Best-effort — an unreachable Ollama server is reported, not fatal."),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Include skipped_dup rows in the terminal table (full list always goes to the ingest log)."),
+    remote: bool = typer.Option(False, "--remote", help="With --live: after the local sources, also pull every registered remote host over ssh (`live-roots init --host <h>`). Remote problems never fail the run."),
+    host: str = typer.Option(None, "--host", help="With --live: pull only this remote host's sources (local sources are skipped)."),
     live: bool = typer.Option(False, "--live", help="Refresh every source in the live-root registry (`chatvault live-roots list`) in one pass: re-extract SQLite-backed stores (Devin, Cursor, Antigravity), ingest, file the snapshots. Prints per-source staleness first and aborts, ingesting nothing, if a registered store has vanished."),
 ) -> None:
     """Ingest RAW export file(s) into SQLite. Idempotent — safe to re-run.
     Prints a status summary plus a short detail table (skips collapsing
     skipped_dup unless --verbose); full per-file report goes to logs/."""
     config = load_config()
+    if not dry_run:
+        _require_writer(config, "ingest")
     if live:
         if path is not None:
             console.print("[red]--live takes no path; it ingests the registered live roots[/red]")
             raise typer.Exit(code=1)
-        _ingest_live(config, adapter=adapter, dry_run=dry_run, reprocess=reprocess, embed=embed, verbose=verbose)
+        _ingest_live(config, adapter=adapter, dry_run=dry_run, reprocess=reprocess, embed=embed, verbose=verbose, remote=remote, host=host)
         return
+    if remote or host:
+        console.print("[red]--remote / --host only apply with --live[/red]")
+        raise typer.Exit(code=1)
     path = path or config.raw_dir
     if not path.exists():
         console.print(f"[red]{path} does not exist[/red]")
@@ -497,70 +532,117 @@ def ingest(
     _render_ingest_report(summary, path, dry_run=dry_run, verbose=verbose, logs_dir=config.logs_dir)
 
 
-def _ingest_live(config, *, adapter, dry_run, reprocess, embed, verbose) -> None:
+def _ingest_live(config, *, adapter, dry_run, reprocess, embed, verbose, remote=False, host=None) -> None:
+    conn = connect(config)
+    try:
+        if host is None:
+            _ingest_live_local(conn, config, adapter=adapter, dry_run=dry_run, reprocess=reprocess, embed=embed, verbose=verbose)
+        if remote or host:
+            _ingest_live_remote(conn, config, host=host, adapter=adapter, dry_run=dry_run, reprocess=reprocess, embed=embed)
+    finally:
+        conn.close()
+
+
+def _ingest_live_remote(conn, config, *, host, adapter, dry_run, reprocess, embed) -> None:
+    """docs/specs/77 §2: runs after the local sources are fully reported; nothing
+    here changes the exit code, whatever the remote does."""
+    from chatvault import intake as intake_mod
+    from chatvault import remote as remote_mod
+
+    names = [host] if host else remote_mod.hosts(conn)
+    if host and host not in remote_mod.hosts(conn):
+        console.print(f"[red]no remote sources registered for {host} — run `chatvault live-roots init --host {host}`[/red]")
+        raise typer.Exit(code=1)
+    if not names:
+        console.print("[yellow]--remote: no remote hosts registered (`chatvault live-roots init --host <h>`)[/yellow]")
+        return
+    colour = {"ok": "green", "STALE": "yellow", "UNREACHABLE": "red", "REMOTE-MISSING": "red", "REMOTE-ERROR": "red"}
+    for name in names:
+        console.print(f"\n[bold]Remote: {name} (local ingest unaffected)[/bold]")
+        rep = remote_mod.pull_host(
+            conn, config, name, dry_run=dry_run,
+            ingest_direct=lambda p: ingest_mod.ingest_path(conn, p, adapter_name=adapter, config=config, reprocess=reprocess, embed=embed, kind="live"),
+            ingest_inbox=lambda sub: intake_mod.run_intake(
+                conn, config, apply=True, subdir=sub,
+                ingest_fn=lambda p: ingest_mod.ingest_path(conn, p, adapter_name=adapter, config=config, reprocess=reprocess, embed=embed),
+            ),
+        )
+        for r in rep.results:
+            c = colour.get(r.state, "white")
+            line = f"  [{c}]{r.state:<14}[/{c}] {r.source}"
+            if r.state == "UNREACHABLE":
+                line += f" — {r.cause}; last successful pull: {(rep.last_pull or 'never')[:19]}"
+            elif r.cause:
+                line += f" — {r.cause}"
+            elif r.detail:
+                line += f" — {r.detail}"
+            console.print(line)
+            if r.fix:
+                console.print(f"    [dim]fix: {r.fix}[/dim]")
+        if rep.log_path and rep.log_path.exists():
+            console.print(f"  [dim]log: {rep.log_path}[/dim]")
+
+
+def _ingest_live_local(conn, config, *, adapter, dry_run, reprocess, embed, verbose) -> None:
     from datetime import datetime, timezone
 
     from chatvault import intake as intake_mod
 
-    conn = connect(config)
-    try:
-        sts = live_roots_mod.statuses(conn)
-        if not sts:
-            console.print("[red]no live roots registered — run `chatvault live-roots init`[/red]")
-            raise typer.Exit(code=1)
-        now = datetime.now(timezone.utc).timestamp()
+    sts = live_roots_mod.statuses(conn)
+    if not sts:
+        console.print("[red]no live roots registered — run `chatvault live-roots init`[/red]")
+        raise typer.Exit(code=1)
+    now = datetime.now(timezone.utc).timestamp()
 
-        def _age(ts: float | None) -> str:
-            return "—" if ts is None else f"{dates_mod.humanize_age(now - ts)} ago"
+    def _age(ts: float | None) -> str:
+        return "—" if ts is None else f"{dates_mod.humanize_age(now - ts)} ago"
 
-        table = Table(title="live sources")
-        for col in ("source", "live store", "extract", "last ingest", "data age", "state"):
-            table.add_column(col, overflow="fold")
-        colour = {"ok": "green", "STALE": "yellow", "MISSING": "red"}
-        for st in sts:
-            table.add_row(st.source, st.store_label, "yes" if st.extracted else "—", _age(st.last_ingest), _age(st.data_age),
-                          f"[{colour[st.state]}]{st.state}[/{colour[st.state]}]")
-        console.print(table)
-        console.print("[dim]data age = newest change in the live store; STALE = the store changed after the last extraction.[/dim]")
-        missing = [st for st in sts if st.state == "MISSING"]
-        if missing:
-            console.print(f"[red]{len(missing)} registered live source(s) have no live store on disk — nothing ingested:[/red]")
-            for st in missing:
-                console.print(f"[red]  {st.source}: {', '.join(st.missing)}[/red]")
-            console.print("[dim]Restore the store, or retire it deliberately: `chatvault live-roots disable <source> --reason ...`[/dim]")
-            raise typer.Exit(code=1)
+    table = Table(title="live sources")
+    for col in ("source", "live store", "extract", "last ingest", "data age", "state"):
+        table.add_column(col, overflow="fold")
+    colour = {"ok": "green", "STALE": "yellow", "MISSING": "red"}
+    for st in sts:
+        table.add_row(st.source, st.store_label, "yes" if st.extracted else "—", _age(st.last_ingest), _age(st.data_age),
+                      f"[{colour[st.state]}]{st.state}[/{colour[st.state]}]")
+    console.print(table)
+    console.print("[dim]data age = newest change in the live store; STALE = the store changed after the last extraction.[/dim]")
+    missing = [st for st in sts if st.state == "MISSING"]
+    if missing:
+        console.print(f"[red]{len(missing)} registered live source(s) have no live store on disk — nothing ingested:[/red]")
+        for st in missing:
+            console.print(f"[red]  {st.source}: {', '.join(st.missing)}[/red]")
+        console.print("[dim]Restore the store, or retire it deliberately: `chatvault live-roots disable <source> --reason ...`[/dim]")
+        raise typer.Exit(code=1)
 
-        for st in sts:
-            for row in st.rows:
-                if row["extract_cmd"]:
-                    if dry_run:
-                        console.print(f"[bold]{st.source}[/bold]: would extract with {row['extract_cmd']} (dry run — not run)")
-                        continue
-                    console.print(f"[bold]extracting {st.source}[/bold] (read-only snapshot of the live store)")
-                    ok, msg = live_roots_mod.extract(conn, config, row)
-                    if not ok:
-                        console.print(f"[red]{st.source}: extraction failed — {msg}[/red]")
-                        raise typer.Exit(code=1)
-                    console.print(f"[dim]{msg}[/dim]")
-                    items = intake_mod.run_intake(
-                        conn, config, apply=True, subdir=st.source,
-                        ingest_fn=lambda p: ingest_mod.ingest_path(conn, p, adapter_name=adapter, config=config, reprocess=reprocess, embed=embed),
-                    )
-                    for it in items:
-                        console.print(f"  {it.action}: {it.path.name} — {it.detail}")
-                    if any(i.action == "failed" for i in items):
-                        raise typer.Exit(code=1)
-                else:
-                    root = Path(row["path"]).expanduser()
-                    console.print(f"[bold]ingesting {root}[/bold]")
-                    try:
-                        summary = ingest_mod.ingest_path(conn, root, adapter_name=adapter, dry_run=dry_run, config=config, reprocess=reprocess, embed=embed)
-                    except ValueError as exc:
-                        console.print(f"[red]{exc}[/red]")
-                        raise typer.Exit(code=1)
-                    _render_ingest_report(summary, root, dry_run=dry_run, verbose=verbose, logs_dir=config.logs_dir)
-    finally:
-        conn.close()
+    for st in sts:
+        for row in st.rows:
+            if row["extract_cmd"]:
+                if dry_run:
+                    console.print(f"[bold]{st.source}[/bold]: would extract with {row['extract_cmd']} (dry run — not run)")
+                    continue
+                console.print(f"[bold]extracting {st.source}[/bold] (read-only snapshot of the live store)")
+                ok, msg = live_roots_mod.extract(conn, config, row)
+                if not ok:
+                    console.print(f"[red]{st.source}: extraction failed — {msg}[/red]")
+                    raise typer.Exit(code=1)
+                console.print(f"[dim]{msg}[/dim]")
+                items = intake_mod.run_intake(
+                    conn, config, apply=True, subdir=st.source,
+                    ingest_fn=lambda p: ingest_mod.ingest_path(conn, p, adapter_name=adapter, config=config, reprocess=reprocess, embed=embed),
+                )
+                for it in items:
+                    console.print(f"  {it.action}: {it.path.name} — {it.detail}")
+                if any(i.action == "failed" for i in items):
+                    raise typer.Exit(code=1)
+            else:
+                root = Path(row["path"]).expanduser()
+                console.print(f"[bold]ingesting {root}[/bold]")
+                try:
+                    summary = ingest_mod.ingest_path(conn, root, adapter_name=adapter, dry_run=dry_run, config=config, reprocess=reprocess, embed=embed)
+                except ValueError as exc:
+                    console.print(f"[red]{exc}[/red]")
+                    raise typer.Exit(code=1)
+                _render_ingest_report(summary, root, dry_run=dry_run, verbose=verbose, logs_dir=config.logs_dir)
 
 
 @live_roots_app.command("list")
@@ -569,36 +651,73 @@ def live_roots_list() -> None:
     config = load_config()
     conn = connect(config)
     try:
-        rows = conn.execute("SELECT * FROM live_roots ORDER BY active DESC, source, path").fetchall()
+        rows = conn.execute("SELECT * FROM live_roots ORDER BY active DESC, host IS NOT NULL, host, source, path").fetchall()
     finally:
         conn.close()
     table = Table(title="live_roots")
-    for col in ("source", "scans", "live store", "extract", "stage", "last extracted", "active"):
+    for col in ("host", "source", "scans", "live store", "extract", "stage", "last extracted", "last pulled", "active"):
         table.add_column(col, overflow="fold")
     for r in rows:
-        table.add_row(r["source"], r["path"] or "—", r["live_store"] or "—", r["extract_cmd"] or "—", r["stage_dir"] or "—",
-                      (r["last_extracted_at"] or "—")[:19], "yes" if r["active"] else f"no ({r['note'] or ''})")
+        table.add_row(r["host"] or "local", r["source"], r["path"] or "—", r["live_store"] or "—", r["extract_cmd"] or "—", r["stage_dir"] or "—",
+                      (r["last_extracted_at"] or "—")[:19], (r["last_pulled_at"] or "—")[:19], "yes" if r["active"] else f"no ({r['note'] or ''})")
     console.print(table)
 
 
 @live_roots_app.command("init")
-def live_roots_init() -> None:
+def live_roots_init(host: str = typer.Option(None, "--host", help="Register the stores found on this ssh host instead (discovered in a login shell on the remote; only what exists is registered).")) -> None:
     """Register the known live sources (idempotent; never edits an existing row)."""
     config = load_config()
+    _require_writer(config, "live-roots init")
     conn = connect(config)
     try:
+        if host:
+            from chatvault import remote as remote_mod
+
+            registered, missing, err = remote_mod.init_host(conn, config, host)
+            if err:
+                console.print(f"[red]{err}[/red]")
+                raise typer.Exit(code=1)
+            for line in registered:
+                console.print(f"  registered {line}")
+            if missing:
+                console.print(f"[dim]not found on {host}: {', '.join(missing)} (picked up by a later init once installed)[/dim]")
+            console.print(f"registered {len(registered)} new live source(s) on {host}")
+            return
         console.print(f"registered {live_roots_mod.seed_defaults(conn)} new live source(s)")
     finally:
         conn.close()
 
 
 @live_roots_app.command("disable")
-def live_roots_disable(source: str = typer.Argument(...), reason: str = typer.Option(..., "--reason")) -> None:
+def live_roots_disable(source: str = typer.Argument(...), reason: str = typer.Option(..., "--reason"), host: str = typer.Option(None, "--host", help="Disable the source on this remote host (default: this machine).")) -> None:
     """Stop refreshing a source (kept in the registry, never deleted)."""
     config = load_config()
+    _require_writer(config, "live-roots disable")
     conn = connect(config)
     try:
-        console.print(f"disabled {live_roots_mod.deactivate(conn, source, reason)} registry row(s) for {source}: {reason}")
+        console.print(f"disabled {live_roots_mod.deactivate(conn, source, reason, host)} registry row(s) for {source}{f' on {host}' if host else ''}: {reason}")
+    finally:
+        conn.close()
+
+
+@live_roots_app.command("set-path")
+def live_roots_set_path(
+    source: str = typer.Argument(..., help="e.g. claude_code, devin_cli, devin_desktop_acp, cursor"),
+    path: str = typer.Argument(..., help="Path or glob on the remote (comma-separated for several). `~` expands on the remote."),
+    host: str = typer.Option(..., "--host", help="ssh alias of the remote machine."),
+) -> None:
+    """Override where a remote source lives (moved or custom location). Survives `init`."""
+    from chatvault import remote as remote_mod
+
+    config = load_config()
+    _require_writer(config, "live-roots set-path")
+    conn = connect(config)
+    try:
+        try:
+            console.print(remote_mod.set_path(conn, host, source, path))
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1)
     finally:
         conn.close()
 
@@ -738,6 +857,8 @@ def intake(
     from chatvault import intake as intake_mod
 
     config = load_config()
+    if apply:
+        _require_writer(config, "intake --apply")
     conn = connect(config)
     try:
         if reorganise:
@@ -981,6 +1102,13 @@ def _render_ingest_report(summary, path: Path, *, dry_run: bool, verbose: bool, 
             )
 
 
+def _platform_cell(r) -> str:
+    """`devin_cli@fedora` for a conversation read on another machine; local
+    conversations print the bare platform (absence = this machine)."""
+    host = r["host"] if "host" in r.keys() else None
+    return f"{r['platform']}@{host}" if host and host != load_config().machine else r["platform"]
+
+
 def _last_active_cell(r) -> str:
     """Date of the last message; "same day" when it falls on the start date, "-"
     when the source carries no end time (never filled in from the start)."""
@@ -1012,7 +1140,7 @@ def _render_find_table(
         "#": max(1, len(str(len(rows)))),
         "date": 10,
         "last active": 11,
-        "platform": max([8] + [len(r["platform"]) for r in rows]),
+        "platform": max([8] + [len(_platform_cell(r)) for r in rows]),
         "msgs": max([4] + [len(str(r["message_count"])) for r in rows]),
         "📎": 2,
     }
@@ -1060,7 +1188,7 @@ def _render_find_table(
             str(i),
             (r["started_at"] or "")[:10] or "-",
             _last_active_cell(r),
-            r["platform"],
+            _platform_cell(r),
             *([escape(project)] if show_project else []),
             escape(title_cell),
             *([str(r["days_ago"]) if r["days_ago"] is not None else "-"] if days else []),

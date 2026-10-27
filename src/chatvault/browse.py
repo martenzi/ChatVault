@@ -71,6 +71,8 @@ def _fts_phrase(query: str) -> str:
 # Block types that are provider boilerplate, not user/assistant content.
 # Hidden from search at the query layer (the rows stay indexed).
 HIDDEN_BLOCK_TYPES = ("injected_context", "meta")
+# docs/specs/77 §5: the machine a conversation's source file was read on.
+HOST_SQL = "(SELECT sf.host FROM source_files sf WHERE sf.id = c.source_file_id) AS host"
 HIDDEN_TYPES_SQL = "(" + ", ".join(f"'{t}'" for t in HIDDEN_BLOCK_TYPES) + ")"
 
 
@@ -429,6 +431,7 @@ def latest(
     total = conn.execute(f"SELECT COUNT(*) FROM v_conversations c WHERE {where_sql}", params).fetchone()[0]  # noqa: S608
     cols = (
         "c.id, c.uid, c.platform, c.title, c.project, c.started_at, c.ended_at, c.ingested_at, c.message_count, "
+        f"{HOST_SQL}, "
         f"CAST(julianday('now') - julianday(c.{col}) AS INTEGER) AS days_ago, "
         "(SELECT COUNT(*) FROM v_blocks b WHERE b.conv_id = c.id AND b.type = 'attachment') AS attachment_count"
     )
@@ -459,6 +462,7 @@ def rows_by_ids(conn: sqlite3.Connection, ids: list[int]) -> list[sqlite3.Row]:
         rs = conn.execute(
             f"""
             SELECT c.id, c.uid, c.platform, c.title, c.project, c.started_at, c.ended_at, c.message_count,
+              {HOST_SQL},
               (SELECT COUNT(*) FROM v_blocks b WHERE b.conv_id = c.id AND b.type = 'attachment') AS attachment_count
             FROM v_conversations c WHERE c.id IN ({",".join("?" * len(chunk))})
             """,  # noqa: S608

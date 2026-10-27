@@ -43,8 +43,17 @@ import tempfile
 from datetime import date
 from pathlib import Path
 
-DEFAULT_SRC_DIR = Path("~/Library/Application Support/Devin/User/acp-messages").expanduser()
 SCHEMA_TAG = "devin_desktop_acp_conversation_v1"
+
+
+def _config_base() -> Path:
+    """macOS ~/Library/Application Support, Linux $XDG_CONFIG_HOME or ~/.config."""
+    if sys.platform == "darwin":
+        return Path("~/Library/Application Support").expanduser()
+    return Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser()
+
+
+DEFAULT_SRC_DIR = _config_base() / "Devin/User/acp-messages"
 
 
 def _snapshot_one(src: Path) -> Path:
@@ -153,6 +162,7 @@ def main() -> int:
         type=Path,
         default=Path(__file__).resolve().parent.parent / "raw" / "00_inbox" / "devin_desktop_acp",
     )
+    parser.add_argument("--host", default=None, help="Machine label for a remote pull (docs/specs/77); omit for local.")
     args = parser.parse_args()
 
     if not args.src_dir.is_dir():

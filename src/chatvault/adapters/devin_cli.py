@@ -243,7 +243,9 @@ def parse(path: Path) -> Iterator[dict]:
 
             yield make_conversation(
                 platform=platform,
-                native_id=session.get("id"),
+                # word-pair slugs are machine-local: namespace a remote pull's ids
+                # by host (docs/specs/77 §6); local records carry no host.
+                native_id=f"{record['host']}:{session.get('id')}" if record.get("host") and session.get("id") else session.get("id"),
                 title=_session_title(session, chain),
                 project=project,
                 started_at=_iso(session.get("created_at")),

@@ -78,7 +78,27 @@ class IngestSummary:
 _INGESTED_ARCHIVE_DIR = "_ingested"
 # raw/ lifecycle folders (chatvault.intake): a walk of raw/ must not re-read
 # files that were already filed, excluded or archived.
-_LIFECYCLE_SKIP_DIRS = {"_ingested", "10_ingested", "20_needs_adapter", "30_excluded", "40_archive"}
+_LIFECYCLE_SKIP_DIRS = {"_ingested", "10_ingested", "20_needs_adapter", "30_excluded", "40_archive", "live_mirror"}
+
+# docs/specs/77 §4-5. Remote data lands in one of two places, and the host is
+# read back from there when no caller says it explicitly:
+#   raw/live_mirror/<host>/<source>/...   rsync mirror of a direct root
+#   .../<source>@<host>/...               an extracted snapshot (stays in the
+#                                         path after intake files it)
+LIVE_MIRROR_DIR = "live_mirror"
+_SNAPSHOT_HOST_RE = re.compile(r"[a-z][a-z0-9_]*@([A-Za-z0-9][A-Za-z0-9_.-]*)")
+
+
+def host_for_path(path: Path) -> str | None:
+    parts = Path(path).parts
+    for i, part in enumerate(parts[:-1]):
+        if i and part == LIVE_MIRROR_DIR and parts[i - 1] == "raw":
+            return parts[i + 1]
+    for part in parts:
+        m = _SNAPSHOT_HOST_RE.fullmatch(part)
+        if m:
+            return m.group(1)
+    return None
 
 
 def _adapter_parse_warnings(mod) -> list[str]:
@@ -143,7 +163,7 @@ def _iter_candidate_files(path: Path, exclude_dir: Path | None = None) -> list[P
 
 
 def _ingest_projects_file(
-    conn: sqlite3.Connection, file_path: Path, mod, root_dir: str, dry_run: bool
+    conn: sqlite3.Connection, file_path: Path, mod, root_dir: str, dry_run: bool, host: str
 ) -> FileIngestResult:
     """Projects files (e.g. Claude's projects.json) are structurally distinct
     from conversation exports and go through loader.load_project instead of
@@ -180,28 +200,28 @@ def _ingest_projects_file(
     except Exception as exc:  # noqa: BLE001
         conn.execute(
             """
-            INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, error, kind, last_seen_at, root_dir, first_seen_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'failed', ?, ?, ?, ?, ?)
+            INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, error, kind, last_seen_at, root_dir, first_seen_at, host)
+            VALUES (?, ?, ?, ?, ?, ?, 'failed', ?, ?, ?, ?, ?, ?)
             ON CONFLICT(sha256, adapter) DO UPDATE SET
                 status='failed', error=excluded.error, ingested_at=excluded.ingested_at,
                 last_seen_at=excluded.last_seen_at, root_dir=excluded.root_dir,
                 first_seen_at=COALESCE(source_files.first_seen_at, excluded.first_seen_at)
             """,
-            (str(file_path), sha, mod.platform, projects_adapter, file_path.stat().st_size, now, str(exc), _kind_for_platform(mod.platform), now, root_dir, now),
+            (str(file_path), sha, mod.platform, projects_adapter, file_path.stat().st_size, now, str(exc), _kind_for_platform(mod.platform), now, root_dir, now, host),
         )
         conn.commit()
         return FileIngestResult(file_path, "failed", adapter=adapter_label, error=str(exc))
 
     cur = conn.execute(
         """
-        INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, kind, last_seen_at, root_dir, first_seen_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'ok', ?, ?, ?, ?)
+        INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, kind, last_seen_at, root_dir, first_seen_at, host)
+        VALUES (?, ?, ?, ?, ?, ?, 'ok', ?, ?, ?, ?, ?)
         ON CONFLICT(sha256, adapter) DO UPDATE SET
             status='ok', error=NULL, ingested_at=excluded.ingested_at,
             last_seen_at=excluded.last_seen_at, root_dir=excluded.root_dir,
             first_seen_at=COALESCE(source_files.first_seen_at, excluded.first_seen_at)
         """,
-        (str(file_path), sha, mod.platform, projects_adapter, file_path.stat().st_size, now, _kind_for_platform(mod.platform), now, root_dir, now),
+        (str(file_path), sha, mod.platform, projects_adapter, file_path.stat().st_size, now, _kind_for_platform(mod.platform), now, root_dir, now, host),
     )
     source_file_id = cur.lastrowid or conn.execute(
         "SELECT id FROM source_files WHERE sha256 = ? AND adapter = ?", (sha, projects_adapter)
@@ -219,7 +239,7 @@ def _ingest_projects_file(
 
 
 def _ingest_artifacts_file(
-    conn: sqlite3.Connection, file_path: Path, mod, root_dir: str, dry_run: bool
+    conn: sqlite3.Connection, file_path: Path, mod, root_dir: str, dry_run: bool, host: str
 ) -> FileIngestResult:
     """`artifacts/<id>/artifact.json` -> attachments via loader.load_artifact.
     `inserted` counts newly created attachment rows, `noop` ones that already
@@ -254,14 +274,14 @@ def _ingest_artifacts_file(
 
     conn.execute(
         """
-        INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, kind, last_seen_at, root_dir, first_seen_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'ok', ?, ?, ?, ?)
+        INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, kind, last_seen_at, root_dir, first_seen_at, host)
+        VALUES (?, ?, ?, ?, ?, ?, 'ok', ?, ?, ?, ?, ?)
         ON CONFLICT(sha256, adapter) DO UPDATE SET
             status='ok', error=NULL, ingested_at=excluded.ingested_at,
             last_seen_at=excluded.last_seen_at, root_dir=excluded.root_dir,
             first_seen_at=COALESCE(source_files.first_seen_at, excluded.first_seen_at)
         """,
-        (str(file_path), sha, mod.platform, artifacts_adapter, file_path.stat().st_size, now, _kind_for_platform(mod.platform), now, root_dir, now),
+        (str(file_path), sha, mod.platform, artifacts_adapter, file_path.stat().st_size, now, _kind_for_platform(mod.platform), now, root_dir, now, host),
     )
     source_file_id = conn.execute(
         "SELECT id FROM source_files WHERE sha256 = ? AND adapter = ?", (sha, artifacts_adapter)
@@ -284,7 +304,12 @@ def ingest_path(
     config: Config | None = None,
     reprocess: bool = False,
     embed: bool = False,
+    host: str | None = None,
+    kind: str | None = None,
 ) -> IngestSummary:
+    """`host` labels source_files.host (default: derived from the path — see
+    host_for_path — else this machine). `kind` overrides the new rows' kind;
+    `ingest --live` passes 'live' for a registered direct root (D18)."""
     exclude_dir = None
     if config is not None:
         from chatvault import sources
@@ -305,6 +330,8 @@ def ingest_path(
 
     path = Path(paths.canonical(path))
     root_dir = str(path if path.is_dir() else path.parent)
+    local = config.machine if config is not None else "mac"
+    host = host or host_for_path(path) or local
     summary = IngestSummary()
     touched_conv_ids: list[int] = []
 
@@ -322,13 +349,13 @@ def ingest_path(
             artifacts_mod = adapters.detect_artifacts(file_path)
             if artifacts_mod is not None:
                 summary.files.append(
-                    _ingest_artifacts_file(conn, file_path, artifacts_mod, root_dir, dry_run=dry_run)
+                    _ingest_artifacts_file(conn, file_path, artifacts_mod, root_dir, dry_run=dry_run, host=host)
                 )
                 continue
             projects_mod = adapters.detect_projects(file_path)
             if projects_mod is not None:
                 summary.files.append(
-                    _ingest_projects_file(conn, file_path, projects_mod, root_dir, dry_run=dry_run)
+                    _ingest_projects_file(conn, file_path, projects_mod, root_dir, dry_run=dry_run, host=host)
                 )
                 matched_projects = True
 
@@ -378,14 +405,14 @@ def ingest_path(
         except Exception as exc:  # noqa: BLE001
             conn.execute(
                 """
-                INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, error, kind, last_seen_at, root_dir, first_seen_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'failed', ?, ?, ?, ?, ?)
+                INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, error, kind, last_seen_at, root_dir, first_seen_at, host)
+                VALUES (?, ?, ?, ?, ?, ?, 'failed', ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(sha256, adapter) DO UPDATE SET
                     status='failed', error=excluded.error, ingested_at=excluded.ingested_at,
                     last_seen_at=excluded.last_seen_at, root_dir=excluded.root_dir,
                     first_seen_at=COALESCE(source_files.first_seen_at, excluded.first_seen_at)
                 """,
-                (str(file_path), sha, mod.platform, mod.name, file_path.stat().st_size, now, str(exc), _kind_for_platform(mod.platform), now, root_dir, now),
+                (str(file_path), sha, mod.platform, mod.name, file_path.stat().st_size, now, str(exc), kind or _kind_for_platform(mod.platform), now, root_dir, now, host),
             )
             conn.commit()
             summary.files.append(FileIngestResult(file_path, "failed", adapter=mod.name, error=str(exc)))
@@ -393,14 +420,14 @@ def ingest_path(
 
         conn.execute(
             """
-            INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, kind, last_seen_at, root_dir, first_seen_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'ok', ?, ?, ?, ?)
+            INSERT INTO source_files (path, sha256, platform, adapter, bytes, ingested_at, status, kind, last_seen_at, root_dir, first_seen_at, host)
+            VALUES (?, ?, ?, ?, ?, ?, 'ok', ?, ?, ?, ?, ?)
             ON CONFLICT(sha256, adapter) DO UPDATE SET
                 status='ok', error=NULL, ingested_at=excluded.ingested_at,
                 last_seen_at=excluded.last_seen_at, root_dir=excluded.root_dir,
                 first_seen_at=COALESCE(source_files.first_seen_at, excluded.first_seen_at)
             """,
-            (str(file_path), sha, mod.platform, mod.name, file_path.stat().st_size, now, _kind_for_platform(mod.platform), now, root_dir, now),
+            (str(file_path), sha, mod.platform, mod.name, file_path.stat().st_size, now, kind or _kind_for_platform(mod.platform), now, root_dir, now, host),
         )
         source_file_id = conn.execute(
             "SELECT id FROM source_files WHERE sha256 = ? AND adapter = ?", (sha, mod.name)
@@ -461,6 +488,8 @@ def ingest_path(
             tags_mod.flag_shape_unclear(conn, touched_conv_ids)
             tags_mod.flag_timestamp_unparsed(conn, touched_conv_ids)
             dates_mod.flag(conn, touched_conv_ids)
+            if host != local:
+                tags_mod.flag_host(conn, touched_conv_ids, host)
 
             if embed:
                 from chatvault import embeddings as embeddings_mod

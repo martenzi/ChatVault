@@ -155,7 +155,7 @@ def _load_prompt_history(con: sqlite3.Connection, session_id: str) -> list[dict]
     return out
 
 
-def extract(src: Path, out_path: Path) -> dict:
+def extract(src: Path, out_path: Path, host: str | None = None) -> dict:
     snap = snapshot(src)
     stats = {"sessions": 0, "message_nodes": 0, "tool_call_state": 0, "prompt_history": 0}
     try:
@@ -196,6 +196,10 @@ def extract(src: Path, out_path: Path) -> dict:
                     "tool_call_state": tool_call_state,
                     "prompt_history": prompt_history,
                 }
+                if host:
+                    # Devin CLI ids are word-pair slugs, unique per machine only
+                    # (docs/specs/77 §6): the adapter namespaces them by host.
+                    record["host"] = host
                 fh.write(json.dumps(record, sort_keys=True, ensure_ascii=False))
                 fh.write("\n")
 
@@ -220,6 +224,7 @@ def main() -> int:
         default=Path(__file__).resolve().parent.parent / "raw" / "00_inbox" / "devin_cli",
         help="raw/00_inbox/devin_cli root — a dated subdirectory is created under it",
     )
+    parser.add_argument("--host", default=None, help="Machine label for a remote pull (docs/specs/77); omit for local.")
     args = parser.parse_args()
 
     if not args.src.exists():
@@ -229,7 +234,7 @@ def main() -> int:
     dated_dir = args.out_dir / date.today().isoformat()
     out_path = dated_dir / "sessions.jsonl"
 
-    stats = extract(args.src, out_path)
+    stats = extract(args.src, out_path, args.host)
     print(f"wrote {out_path}")
     print(stats)
     return 0

@@ -1,6 +1,7 @@
 # {{ conv.title or "Untitled" }}
 
-- platform: {{ conv.platform }}
+- platform: {{ conv.platform }}{% if conv.host %}
+- host: {{ conv.host }}{% endif %}
 - model: {{ conv.model_primary or "unknown" }}
 - started: {{ conv.started_at }}
 - ended: {{ conv.ended_at }}

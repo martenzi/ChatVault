@@ -4,6 +4,7 @@ import re
 import sqlite3
 from pathlib import Path
 
+from chatvault.config import load_config
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 TEMPLATES_DIR = Path(__file__).resolve().parents[2] / "templates"
@@ -55,6 +56,11 @@ def _fetch_conversation(conn: sqlite3.Connection, conv_row: sqlite3.Row) -> dict
     ]
 
     conv = dict(conv_row)
+    host = conn.execute(
+        "SELECT sf.host FROM conversations c JOIN source_files sf ON sf.id = c.source_file_id WHERE c.id = ?", (conv_id,)
+    ).fetchone()
+    # absence = this machine, so an export of a local conversation is unchanged
+    conv["host"] = host[0] if host and host[0] and host[0] != load_config().machine else None
     conv["messages"] = messages
     conv["tags"] = tags
     conv["uid_short"] = conv["uid"].split(":")[-1][:12]

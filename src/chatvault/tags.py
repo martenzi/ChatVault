@@ -274,6 +274,28 @@ def apply_rules(conn: sqlite3.Connection, conv_ids: list[int] | None = None) -> 
     return applied
 
 
+def flag_host(conn: sqlite3.Connection, conv_ids: list[int], host: str) -> int:
+    """Tag conversations a remote machine contributed to `host/<name>`
+    (docs/specs/77 §5). Never removed: it means "this host contributed"."""
+    if not conv_ids:
+        return 0
+    tag_id = _get_or_create_tag(conn, f"host/{host}")
+    now = _now()
+    applied = 0
+    for cid in conv_ids:
+        cur = conn.execute(
+            """
+            INSERT INTO tag_links (tag_id, target_type, target_id, source, created_at)
+            VALUES (?, 'conversation', ?, 'rule', ?)
+            ON CONFLICT(tag_id, target_type, target_id) DO NOTHING
+            """,
+            (tag_id, cid, now),
+        )
+        applied += cur.rowcount
+    conn.commit()
+    return applied
+
+
 def flag_model_unknown(conn: sqlite3.Connection, conv_ids: list[int]) -> int:
     """Applies review/model-unknown (spec'd in docs/10_CONCEPTS_label_tag_
     project.md §9 but never actually wired up) to conversations whose model

@@ -1,6 +1,7 @@
 ---
 title: {{ (conv.title or "Untitled") | tojson }}
-platform: {{ conv.platform | tojson }}
+platform: {{ conv.platform | tojson }}{% if conv.host %}
+host: {{ conv.host | tojson }}{% endif %}
 model: {{ (conv.model_primary or "unknown") | tojson }}
 date: {{ ((conv.started_at or "")[:10]) | tojson }}
 conv_uid: {{ conv.uid | tojson }}

@@ -133,6 +133,14 @@ def connect(config: Config, auto_migrate: bool = True) -> sqlite3.Connection:
     explicitly (backup-then-migrate, tests inspecting pre-migration state)
     pass auto_migrate=False and call migrate() themselves."""
     path = config.brain_path
+    if config.is_replica:
+        # docs/specs/77 §7: read-only on a synced copy; no schema self-heal.
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+        return conn
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row

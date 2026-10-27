@@ -60,9 +60,9 @@ def seed_defaults(conn: sqlite3.Connection) -> int:
     added = 0
     for d in DEFAULTS:
         if d.get("extract_cmd"):
-            exists = conn.execute("SELECT 1 FROM live_roots WHERE source = ? AND extract_cmd IS NOT NULL", (d["source"],)).fetchone()
+            exists = conn.execute("SELECT 1 FROM live_roots WHERE host IS NULL AND source = ? AND extract_cmd IS NOT NULL", (d["source"],)).fetchone()
         else:
-            exists = conn.execute("SELECT 1 FROM live_roots WHERE path = ?", (d["path"],)).fetchone()
+            exists = conn.execute("SELECT 1 FROM live_roots WHERE host IS NULL AND path = ?", (d["path"],)).fetchone()
         if exists:
             continue
         conn.execute(
@@ -81,12 +81,12 @@ def seed_defaults(conn: sqlite3.Connection) -> int:
 
 
 def active(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    return conn.execute("SELECT * FROM live_roots WHERE active = 1 ORDER BY source, path").fetchall()
+    return conn.execute("SELECT * FROM live_roots WHERE active = 1 AND host IS NULL ORDER BY source, path").fetchall()
 
 
-def deactivate(conn: sqlite3.Connection, source: str, reason: str) -> int:
+def deactivate(conn: sqlite3.Connection, source: str, reason: str, host: str | None = None) -> int:
     cur = conn.execute(
-        "UPDATE live_roots SET active = 0, note = ? WHERE source = ? AND active = 1", (reason, source)
+        "UPDATE live_roots SET active = 0, note = ? WHERE source = ? AND active = 1 AND host IS ?", (reason, source, host)
     )
     conn.commit()
     return cur.rowcount

@@ -15,8 +15,13 @@ MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
 
 
 def connect(config: Config) -> sqlite3.Connection:
-    config.db_dir.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(config.db_path)
+    if config.is_replica:
+        # docs/specs/77 §7: a synced copy is overwritten by the next sync, so a
+        # write here would be lost silently. SQLite itself refuses it.
+        conn = sqlite3.connect(f"file:{config.db_path}?mode=ro", uri=True)
+    else:
+        config.db_dir.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(config.db_path)
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA synchronous = NORMAL")
@@ -51,6 +56,7 @@ def migrate(config: Config) -> list[str]:
 
     Returns the list of migration filenames that were applied.
     """
+    config.require_writer("migrate")
     if config.db_path.exists():
         backup_mod.create_backup(config, label="pre-migrate")
 

@@ -82,8 +82,15 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-DEFAULT_GLOBAL_STORAGE = Path("~/Library/Application Support/Cursor/User/globalStorage").expanduser()
-DEFAULT_WORKSPACE_STORAGE = Path("~/Library/Application Support/Cursor/User/workspaceStorage").expanduser()
+def _config_base() -> Path:
+    """macOS ~/Library/Application Support, Linux $XDG_CONFIG_HOME or ~/.config."""
+    if sys.platform == "darwin":
+        return Path("~/Library/Application Support").expanduser()
+    return Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser()
+
+
+DEFAULT_GLOBAL_STORAGE = _config_base() / "Cursor/User/globalStorage"
+DEFAULT_WORKSPACE_STORAGE = _config_base() / "Cursor/User/workspaceStorage"
 SCHEMA_TAG = "cursor_conversation_v1"
 
 
@@ -345,6 +352,7 @@ def main() -> int:
         type=Path,
         default=Path(__file__).resolve().parent.parent / "raw" / "00_inbox" / "cursor",
     )
+    parser.add_argument("--host", default=None, help="Machine label for a remote pull (docs/specs/77); omit for local.")
     args = parser.parse_args()
 
     if not (args.global_storage / "state.vscdb").exists():
