@@ -318,3 +318,151 @@ def test_ingest_path_embed_failure_does_not_fail_the_ingest(conn, tmp_path, monk
     summary = ingest.ingest_path(conn, fixture, embed=True)
     assert summary.totals["inserted"] == 1  # the ingest itself still succeeded
     assert summary.embedding.unavailable is True
+
+
+# ─────────────── head + tail representation ───────────────
+
+
+def _load_blocks(conn, native_id, title, texts):
+    """One assistant text block per entry, one message each."""
+    cir = make_conversation(
+        platform="synthetic", native_id=native_id, title=title, project=None,
+        started_at="2026-01-01T00:00:00", ended_at="2026-01-01T00:00:00", source_path="synthetic", raw={},
+        messages=[
+            make_message(i, "user" if i % 2 == 0 else "assistant", None, "2026-01-01T00:00:00",
+                         [make_block(0, "text", t, raw={})], raw={})
+            for i, t in enumerate(texts)
+        ],
+    )
+    result = loader.load_conversation(conn, cir, source_file_id=None)
+    conn.commit()
+    return result.conv_id
+
+
+@pytest.mark.parametrize("n", [3, 8, 9, 12, 14])
+def test_short_conversation_has_no_duplicated_text_and_keeps_its_ending(conn, n):
+    texts = [f"block-{i:02d} unique" for i in range(n)]  # <= HEAD(8) + TAIL(6)
+    cid = _load_blocks(conn, f"ht1-{n}", "Short", texts)
+    out = embeddings.representative_text(conn, cid)
+    for t in texts:
+        assert out.count(t) == 1   # every block exactly once: nothing dropped, nothing doubled
+    assert "[...]" not in out      # contiguous, so no gap marker
+
+
+def test_long_conversation_gets_head_separator_and_tail(conn):
+    texts = [f"block-{i:02d} unique" for i in range(30)]
+    cid = _load_blocks(conn, "ht2", "Long", texts)
+    out = embeddings.representative_text(conn, cid)
+    head, sep, tail = out.partition("[...]")
+    assert sep
+    assert out.startswith("Long\n")
+    assert "block-00 unique" in head and "block-07 unique" in head
+    assert "block-08 unique" not in out and "block-23 unique" not in out
+    assert "block-24 unique" in tail and "block-29 unique" in tail
+    assert len(out) == len(out.strip())
+
+
+def test_huge_opening_block_cannot_starve_later_blocks_or_tail(conn):
+    texts = ["x" * 10000] + [f"middle-{i:02d}" for i in range(20)] + ["final recommendation: ship it"]
+    cid = _load_blocks(conn, "ht3", "Big opening", texts)
+    s = embeddings.EmbedSettings()
+    out = embeddings.representative_text(conn, cid, s)
+    assert out.count("x") <= s.per_block_chars
+    assert "middle-00" in out
+    assert "final recommendation: ship it" in out
+    assert len(out) <= s.max_chars
+
+
+def test_leftover_budget_is_partial_filled_not_wasted(conn):
+    s = embeddings.EmbedSettings(max_chars=1000, head_blocks=8, tail_blocks=0, per_block_chars=800)
+    cid = _load_blocks(conn, "ht4", "T", ["a" * 800, "b" * 800])
+    out = embeddings.representative_text(conn, cid, s)
+    assert len(out) == 1000          # budget fully spent
+    assert out.count("b") == 1000 - len("T\n") - 800 - 1  # second block partial-filled
+
+
+def test_tight_tail_budget_keeps_the_last_block(conn):
+    s = embeddings.EmbedSettings(max_chars=900, head_blocks=2, tail_blocks=3, per_block_chars=2000)
+    texts = [f"h{i}-" + "y" * 600 for i in range(2)] + ["mid"] * 5 + ["t0-" + "z" * 600, "t1-" + "z" * 600, "FINAL-" + "z" * 600]
+    cid = _load_blocks(conn, "ht5", "T", texts)
+    out = embeddings.representative_text(conn, cid, s)
+    assert "FINAL-" in out
+    assert len(out) <= s.max_chars
+
+
+def test_settings_come_from_env_and_are_recorded_per_row(conn, monkeypatch):
+    monkeypatch.setenv("CHATVAULT_EMBED_MAX_CHARS", "1234")
+    monkeypatch.setenv("CHATVAULT_EMBED_TAIL_BLOCKS", "2")
+    assert embeddings.embed_settings().max_chars == 1234
+    assert embeddings.embed_settings().tail_blocks == 2
+    cid = _load_blocks(conn, "ht6", "npm", ["npm is broken"])
+    embeddings.index_conversations(conn, conv_ids=[cid])
+    row = conn.execute("SELECT settings FROM embedding_meta WHERE conv_id = ?", (cid,)).fetchone()
+    assert row["settings"] == "max=1234;head=8;tail=2;perblock=2000"
+    st = embeddings.status(conn)
+    assert st["other_settings"] == 0
+    monkeypatch.setenv("CHATVAULT_EMBED_MAX_CHARS", "999")
+    assert embeddings.status(conn)["other_settings"] == 1
+
+
+# ─────────────── endpoint configuration ───────────────
+
+
+def test_ollama_base_url_normalisation(monkeypatch):
+    from chatvault import ollama
+    monkeypatch.delenv("CHATVAULT_OLLAMA_URL", raising=False)
+    assert ollama.base_url() == "http://localhost:11434" and not ollama.is_remote()
+    for raw in ("http://100.1.2.3:11434", "100.1.2.3:11434/", "http://100.1.2.3:11434/api/embeddings"):
+        monkeypatch.setenv("CHATVAULT_OLLAMA_URL", raw)
+        assert ollama.base_url() == "http://100.1.2.3:11434"
+    assert ollama.is_remote() and ollama.embed_timeout_s() > 30
+    assert ollama.keep_alive() == "30m"
+
+
+def test_unreachable_remote_errors_naming_the_url_without_falling_back(monkeypatch):
+    monkeypatch.undo()  # drop the autouse fake embedder: exercise the real function
+    monkeypatch.setenv("CHATVAULT_OLLAMA_URL", "http://127.0.0.1:9")  # discard port: refused
+    with pytest.raises(embeddings.EmbeddingUnavailable) as exc:
+        embeddings.embed_text("hello")
+    assert "127.0.0.1:9" in str(exc.value)
+
+
+# ─────────────── retry with backoff (backfills only) ───────────────
+
+
+def test_transient_failure_is_retried_then_succeeds(monkeypatch):
+    calls, waits = [], []
+    def flaky(text, model=embeddings.MODEL, base_url=None):
+        calls.append(1)
+        if len(calls) < 3:
+            raise embeddings.EmbeddingUnavailable("down", transient=True)
+        return [0.0] * embeddings.DIM
+    monkeypatch.setattr(embeddings, "embed_text", flaky)
+    monkeypatch.setattr(embeddings, "_sleep", waits.append)
+    embeddings.embed_text_retrying("x", retries=5, wait_s=60)
+    assert len(calls) == 3 and waits == [60, 60]
+
+
+def test_retries_exhausted_and_non_transient_raise(monkeypatch):
+    waits = []
+    monkeypatch.setattr(embeddings, "_sleep", waits.append)
+    def down(text, model=embeddings.MODEL, base_url=None):
+        raise embeddings.EmbeddingUnavailable("down", transient=True)
+    monkeypatch.setattr(embeddings, "embed_text", down)
+    with pytest.raises(embeddings.EmbeddingUnavailable):
+        embeddings.embed_text_retrying("x", retries=2, wait_s=60)
+    assert waits == [60, 60]
+    def missing(text, model=embeddings.MODEL, base_url=None):
+        raise embeddings.EmbeddingUnavailable("no model", transient=False)
+    monkeypatch.setattr(embeddings, "embed_text", missing)
+    waits.clear()
+    with pytest.raises(embeddings.EmbeddingUnavailable):
+        embeddings.embed_text_retrying("x", retries=5, wait_s=60)
+    assert waits == []
+
+
+def test_absurdly_long_title_is_capped_and_body_still_fits(conn):
+    cid = _load_blocks(conn, "ht-title", "T" * 50000, ["body one", "body two"])
+    out = embeddings.representative_text(conn, cid)
+    assert out.startswith("T" * embeddings.TITLE_MAX_CHARS + "\n") and "body one" in out
+    assert len(out) <= embeddings.MAX_CHARS

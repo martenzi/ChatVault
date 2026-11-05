@@ -24,7 +24,7 @@ from chatvault.brain.collections import (
 )
 from chatvault.brain.core import BrainError, get_item_by_id, known_kinds, known_rels, now, resolve_collection, resolve_item, resolve_ref_or_id
 from chatvault.brain.distill import DEFAULT_MODEL as DISTILL_DEFAULT_MODEL
-from chatvault.brain.distill import OLLAMA_GENERATE_URL as DISTILL_OLLAMA_URL
+from chatvault.brain.distill import generate_url as distill_url
 from chatvault.brain.distill import DistillUnavailable, distill, distill_entry, resolve_conversation
 from chatvault.brain.doctor import CheckResult, run_all as doctor_run_all
 from chatvault.brain.embeddings import IndexResult, index_entries, semantic_find
@@ -65,7 +65,7 @@ __all__ = [
     "BrainError", "get_item_by_id", "known_kinds", "known_rels", "now", "resolve_collection", "resolve_item", "resolve_ref_or_id",
     "CheckResult", "doctor_run_all",
     "IndexResult", "index_entries", "semantic_find", "embed_status", "EmbeddingUnavailable",
-    "distill", "distill_entry", "DistillUnavailable", "resolve_conversation", "DISTILL_DEFAULT_MODEL", "DISTILL_OLLAMA_URL",
+    "distill", "distill_entry", "DistillUnavailable", "resolve_conversation", "DISTILL_DEFAULT_MODEL", "distill_url",
     "jot", "jot_file", "list_inbox", "accept", "reject",
     "BrainEntry", "PROMOTED_TAG", "add_entry", "archive_entry", "edit_entry", "exclude_entry", "find_entries",
     "get_item_row", "list_entries", "pick", "promote", "promote_from_stash", "purge_entry", "redact_entry", "remove_entry",

@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 
 from chatvault import export as export_mod
+from chatvault import ollama
 from chatvault.brain.core import BrainError, known_kinds, now, resolve_item
 
 # `brain distill` (docs/40_SPEC_second_brain_v0.md §3c, ported from the
@@ -18,7 +19,6 @@ from chatvault.brain.core import BrainError, known_kinds, now, resolve_item
 # conversation, LLM-assisted under the hood but a separate deliberate act,
 # not a copy.
 
-OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
 DEFAULT_MODEL = "mistral:latest"
 _TIMEOUT_S = 300
 NOTHING_DURABLE_MARKER = "NOTHING_DURABLE"
@@ -58,7 +58,13 @@ class DistillUnavailable(RuntimeError):
     """Ollama isn't reachable, or the model isn't pulled."""
 
 
-def ollama_generate(prompt: str, model: str = DEFAULT_MODEL, base_url: str = OLLAMA_GENERATE_URL) -> str:
+def generate_url() -> str:
+    """Resolved per call from CHATVAULT_OLLAMA_URL (default local)."""
+    return ollama.base_url() + "/api/generate"
+
+
+def ollama_generate(prompt: str, model: str = DEFAULT_MODEL, base_url: str | None = None) -> str:
+    base_url = base_url or generate_url()
     payload = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode("utf-8")
     req = urllib.request.Request(base_url, data=payload, headers={"Content-Type": "application/json"})
     try:

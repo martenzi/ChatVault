@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import pydoc
 import sqlite3
 import sys
+import time
 from datetime import date
 from pathlib import Path
 
@@ -21,7 +23,9 @@ from chatvault import curation
 from chatvault import curation_io
 from chatvault import dates as dates_mod
 from chatvault import dedupe as dedupe_mod
+from chatvault import chunk_embeddings as chunk_embeddings_mod
 from chatvault import embeddings as embeddings_mod
+from chatvault import ollama as ollama_mod
 from chatvault import doctor as doctor_mod
 from chatvault import export as export_mod
 from chatvault import graph as graph_mod
@@ -1199,6 +1203,22 @@ def _render_find_table(
     console.print(footer or f"showing {len(rows)} of {total} matches · saved as last query")
 
 
+def _render_matches(rows: list, matches: dict) -> None:
+    """Under a semantic table: per row, the cosine distance (lower = closer)
+    and — for passage search — the passage that won. Row numbers match the table."""
+    from rich.markup import escape
+
+    if not any(m.snippet for m in matches.values()):
+        if matches:
+            console.print("[dim]ranked by whole-conversation vector (distance = cosine, lower is closer)[/dim]")
+        return
+    console.print("[bold]best-matching passage[/bold] [dim](cosine distance, lower is closer)[/dim]")
+    for i, r in enumerate(rows, start=1):
+        m = matches.get(r["id"])
+        if m is not None:
+            console.print(f"[dim]{i:>3}  {m.distance:.3f}[/dim]  {escape(m.snippet)}")
+
+
 _SINCE_HELP = "Conversation was STARTED on or after this date (ISO). For freshness use --active-since."
 _BEFORE_HELP = "Conversation was STARTED before this date (ISO, exclusive)."
 _ACTIVE_SINCE_HELP = (
@@ -2127,18 +2147,26 @@ def search(
     query: str = typer.Argument(...),
     platform: str = typer.Option(None, "--platform", help="Exact platform name, or a short alias: gpt, claude (matches claude_desktop + claude_code), ds, gem, wind."),
     limit: int = typer.Option(50, "--limit"),
+    whole_conversation: bool = typer.Option(False, "--whole-conversation", help="Rank by one vector per conversation (the older, coarser index) instead of by best-matching passage."),
 ) -> None:
     """Semantic search over conversations — finds conversations whose meaning
     matches the query even if they share none of its actual words. Always
     embedding-based (no flag needed); for keyword/title matching use
-    `chatvault find` instead. Numbers the results and caches them so
-    `export --pick`/`show --pick` can select by row, same as `find`. Prints
-    a table."""
+    `chatvault find` instead. When the passage index is built (`chatvault
+    embed --chunks`) each conversation is ranked by its best-matching passage
+    and that passage is shown under the table; otherwise (or with
+    --whole-conversation) by one vector per conversation. Numbers the results
+    and caches them so `export --pick`/`show --pick` can select by row, same
+    as `find`. Prints a table."""
     config = load_config()
     conn = connect(config)
+    matches: dict = {}
     try:
         try:
-            rows, total = embeddings_mod.semantic_search(conn, query, limit=limit, return_total=True)
+            rows, total = embeddings_mod.semantic_search(
+                conn, query, limit=limit, return_total=True,
+                whole_conversation=whole_conversation, matches=matches,
+            )
         except embeddings_mod.EmbeddingUnavailable as exc:
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(code=1)
@@ -2154,6 +2182,7 @@ def search(
         conn.close()
 
     _render_find_table(f"search: {query!r}", rows, total, mode="semantic", query=query)
+    _render_matches(rows, matches)
 
 
 @app.command(rich_help_panel="Search & Browse", epilog=_SEARCH_EPILOG)
@@ -2930,13 +2959,25 @@ def embed(
     force: bool = typer.Option(False, "--force", help="Re-embed even conversations whose text hasn't changed."),
     status: bool = typer.Option(False, "--status", help="Show embedded/pending counts without embedding anything."),
     rescan: bool = typer.Option(False, "--rescan", help="Also re-check the text hash of every embedded conversation and re-embed changed ones."),
+    chunks: bool = typer.Option(False, "--chunks", help="Build/refresh the passage-level index (one vector per substantial text block) that `search` uses to rank conversations by their best-matching passage. Additive: the per-conversation index is left alone. With --force, re-embeds every passage."),
 ) -> None:
     """Backfill semantic-search embeddings over the corpus (spec: 'runs once
     over the full existing corpus, then incrementally on new ingests' — this
-    is the once; ingest handles the incrementally). Safe to interrupt and
-    re-run: already-embedded, unchanged conversations are skipped. Prints status lines."""
+    is the once; ingest handles the incrementally). Waits out a restarting or temporarily
+    unreachable Ollama (retries every 60 s, up to 10 times) before stopping.
+    Resumable: it commits
+    after every conversation, so Ctrl-C loses at most one and re-running
+    carries on (already-embedded, unchanged conversations are skipped) —
+    pausing is always safe. After changing the representation settings use
+    `--rescan` (re-embeds only conversations whose text changed, and resumes
+    cleanly); `--force` re-embeds everything and cannot resume. Runs against the Ollama server in CHATVAULT_OLLAMA_URL
+    (default local); the representation is tuned with CHATVAULT_EMBED_MAX_CHARS
+    / _HEAD_BLOCKS / _TAIL_BLOCKS / _PER_BLOCK_CHARS. Prints status lines."""
     config = load_config()
     conn = connect(config)
+    if chunks:
+        _embed_chunks(conn, force=force, status=status)
+        return
     try:
         if status:
             data = embeddings_mod.status(conn)
@@ -2945,6 +2986,15 @@ def embed(
                 f"unembeddable: {data['unembeddable']}  total: {data['total']}"
             )
             console.print(f"[dim]stale (superseded/excluded, safe to ignore): {data['stale']}[/dim]")
+            console.print(
+                f"[dim]settings now: {data['settings']} — embedded under other settings "
+                f"(older/different, `--rescan` or `--force` refreshes): {data['other_settings']}[/dim]"
+            )
+            cs = chunk_embeddings_mod.status(conn)
+            console.print(
+                f"[dim]passage index (embed --chunks): {cs['embedded']} of {cs['eligible']} eligible blocks "
+                f"embedded, {cs['pending']} pending[/dim]"
+            )
             return
 
         if not (force or rescan):
@@ -2953,18 +3003,80 @@ def embed(
             if not pending_ids:
                 console.print("nothing to embed")
                 return
+        t0 = time.perf_counter()
         result = embeddings_mod.index_conversations(
-            conn, force=force, rescan=rescan,
+            conn, force=force, rescan=rescan, **_retry_args(),
             progress=lambda done, total: console.print(f"[dim]embedding {done}/{total}[/dim]"),
         )
+        elapsed = time.perf_counter() - t0
     finally:
         conn.close()
 
     console.print(f"embedded: {result.embedded}  skipped: {result.skipped}  failed: {result.failed}")
+    if result.embedded:
+        console.print(
+            f"[dim]wall-clock {elapsed / 60:.1f} min, {result.embedded / (elapsed / 60):.1f} conversations/min "
+            f"via {ollama_mod.where()}[/dim]"
+        )
+    if result.shrunk:
+        console.print(
+            f"[yellow]{result.shrunk} input(s) exceeded the model's context and were shortened from the "
+            f"middle — lower CHATVAULT_EMBED_MAX_CHARS if this is frequent.[/yellow]"
+        )
     if result.unavailable:
         console.print(
-            "[red]Ollama wasn't reachable — stopped early. "
-            "Run `ollama serve` (and `ollama pull nomic-embed-text` if needed), then re-run `chatvault embed`.[/red]"
+            f"[red]Stopped early: {result.error}\n"
+            "Fix that (see `chatvault doctor`), then re-run `chatvault embed --rescan` — it resumes.[/red]"
+        )
+        raise typer.Exit(code=1)
+
+
+def _retry_args() -> dict:
+    """Backfills wait out a restarting/sleeping Ollama instead of aborting:
+    CHATVAULT_EMBED_RETRIES (default 10) x CHATVAULT_EMBED_RETRY_WAIT_S (60)."""
+    def on_wait(attempt: int, total: int, wait: float, exc: Exception) -> None:
+        console.print(f"[yellow]Ollama unavailable ({str(exc)[:110]}…) — retry {attempt}/{total} in {wait:.0f}s[/yellow]")
+
+    return {
+        "retries": int(os.environ.get("CHATVAULT_EMBED_RETRIES") or embeddings_mod.DEFAULT_RETRIES),
+        "on_wait": on_wait,
+    }
+
+
+def _embed_chunks(conn, *, force: bool, status: bool) -> None:
+    try:
+        st = chunk_embeddings_mod.status(conn)
+        console.print(
+            f"passage index: {st['embedded']} of {st['eligible']} eligible blocks (user/assistant text, "
+            f">= {chunk_embeddings_mod.MIN_CHARS} chars) embedded, {st['pending']} pending · {st['settings']}"
+        )
+        if status:
+            return
+        if not force and not st["pending"]:
+            console.print("nothing to embed")
+            return
+        t0 = time.perf_counter()
+        result = chunk_embeddings_mod.index_chunks(
+            conn, force=force, **_retry_args(),
+            progress=lambda done, total: console.print(f"[dim]conversations {done}/{total}[/dim]"),
+        )
+        elapsed = time.perf_counter() - t0
+    finally:
+        conn.close()
+    console.print(
+        f"embedded: {result.embedded}  skipped: {result.skipped}  conversations touched: {result.conversations}"
+    )
+    if result.embedded:
+        console.print(
+            f"[dim]wall-clock {elapsed / 60:.1f} min, {result.embedded / (elapsed / 60):.1f} passages/min "
+            f"via {ollama_mod.where()}[/dim]"
+        )
+    if result.shrunk:
+        console.print(f"[yellow]{result.shrunk} input(s) exceeded the model's context and were shortened.[/yellow]")
+    if result.unavailable:
+        console.print(
+            f"[red]Stopped early: {result.error}\n"
+            "Fix that (see `chatvault doctor`) and re-run `chatvault embed --chunks`; it resumes.[/red]"
         )
         raise typer.Exit(code=1)
 

@@ -499,6 +499,16 @@ def ingest_path(
                 # stops cleanly (IndexResult.unavailable=True) rather than
                 # raising, so no try/except is needed here — just surface it.
                 summary.embedding = embeddings_mod.index_conversations(conn, conv_ids=touched_conv_ids)
+                # Keep the passage index current once the user has built it,
+                # so a fresh ingest doesn't leave search falling back to
+                # whole-conversation ranking. Not built yet = not our job.
+                from chatvault import chunk_embeddings
+
+                if (
+                    not summary.embedding.unavailable
+                    and conn.execute("SELECT 1 FROM block_embedding_meta LIMIT 1").fetchone()
+                ):
+                    chunk_embeddings.index_chunks(conn, conv_ids=touched_conv_ids)
 
         # Self-maintaining presence tracking: if this root has ever been
         # marked 'live', a fresh ingest is also the natural moment to notice

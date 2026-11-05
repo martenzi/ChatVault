@@ -757,7 +757,7 @@ def promote_cmd(
 
 
 def _announce_model(model: str) -> None:
-    console.print(f"[dim]running extraction with {model} via {brain_mod.DISTILL_OLLAMA_URL}, this can take a minute...[/dim]")
+    console.print(f"[dim]running extraction with {model} via {brain_mod.distill_url()}, this can take a minute...[/dim]")
 
 
 def _summarise_conversation(from_conv: str, why: str, model: str, kind: str) -> None:

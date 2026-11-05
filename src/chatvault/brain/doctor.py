@@ -6,7 +6,7 @@ import urllib.error
 import urllib.request
 
 from chatvault.brain_db import BRAIN_MIGRATIONS_DIR
-from chatvault.brain.distill import OLLAMA_GENERATE_URL
+from chatvault import ollama
 from chatvault.doctor import CheckResult
 
 # `brain doctor` (docs/51_SPEC_brain_parity_and_naming.md §2.1 `doctor` row):
@@ -15,19 +15,19 @@ from chatvault.doctor import CheckResult
 # `brain doctor` render through the exact same table shape in the CLI.
 
 # `summarise conversation`/`summarise entry` (chatvault/brain/distill.py)
-# POST to OLLAMA_GENERATE_URL ("http://localhost:11434/api/generate"); this
-# check derives the host from that same constant rather than hardcoding a
-# second copy, and hits Ollama's own lightweight /api/tags listing endpoint
-# instead of /api/generate — a reachability probe should not itself burn a
-# model invocation.
-_OLLAMA_TAGS_URL = OLLAMA_GENERATE_URL.rsplit("/api/", 1)[0] + "/api/tags"
+# POST to the server configured by CHATVAULT_OLLAMA_URL (default local); this
+# check resolves the same server rather than hardcoding a second copy, and
+# hits Ollama's own lightweight /api/tags listing endpoint instead of
+# /api/generate — a reachability probe should not itself burn a model
+# invocation.
 _TIMEOUT_S = 3
 
 
-def check_ollama_reachable(base_url: str = _OLLAMA_TAGS_URL) -> CheckResult:
+def check_ollama_reachable(base_url: str | None = None) -> CheckResult:
     """Lightweight ping — GET /api/tags, no generation. Lists locally
     available models on success (§8 Q5: 'doctor list locally available
     models so the user can choose informedly' for --model)."""
+    base_url = base_url or ollama.base_url() + "/api/tags"
     req = urllib.request.Request(base_url)
     try:
         with urllib.request.urlopen(req, timeout=_TIMEOUT_S) as resp:

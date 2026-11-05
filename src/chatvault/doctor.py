@@ -85,22 +85,35 @@ def check_neo4j(config: Config) -> CheckResult:
 
 
 def check_ollama() -> CheckResult:
-    from chatvault import embeddings
+    import time
 
+    from chatvault import embeddings, ollama
+
+    s = embeddings.embed_settings()
+    settings = (
+        f"representation: max_chars={s.max_chars} head={s.head_blocks} "
+        f"tail={s.tail_blocks} per_block={s.per_block_chars}; keep_alive={ollama.keep_alive()}"
+    )
     try:
-        embeddings.embed_text("doctor preflight check")
+        embeddings.embed_text("doctor preflight check")  # loads the model if cold
+        t0 = time.perf_counter()
+        embeddings.embed_text("doctor latency check")
+        ms = (time.perf_counter() - t0) * 1000
         return CheckResult(
             name="ollama / semantic search",
             ok=True,
             fatal=False,
-            detail=f"reachable, model {embeddings.MODEL!r} responds",
+            detail=(
+                f"endpoint {ollama.where()}, model {embeddings.MODEL!r} responds, "
+                f"round-trip {ms:.0f} ms (warm, tiny input); {settings}"
+            ),
         )
     except embeddings.EmbeddingUnavailable as exc:
         return CheckResult(
             name="ollama / semantic search",
             ok=False,
             fatal=False,
-            detail=f"{exc} — warn only, everything else still works",
+            detail=f"{exc} — warn only, everything else still works; {settings}",
         )
 
 
