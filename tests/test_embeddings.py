@@ -462,7 +462,9 @@ def test_retries_exhausted_and_non_transient_raise(monkeypatch):
 
 
 def test_absurdly_long_title_is_capped_and_body_still_fits(conn):
-    cid = _load_blocks(conn, "ht-title", "T" * 50000, ["body one", "body two"])
+    cid = _load_blocks(conn, "ht-title", "short", ["body one", "body two"])
+    # The loader now caps titles at 200; a row stored before that rule can still be huge.
+    conn.execute("UPDATE conversations SET title = ? WHERE id = ?", ("T" * 50000, cid))
     out = embeddings.representative_text(conn, cid)
     assert out.startswith("T" * embeddings.TITLE_MAX_CHARS + "\n") and "body one" in out
     assert len(out) <= embeddings.MAX_CHARS

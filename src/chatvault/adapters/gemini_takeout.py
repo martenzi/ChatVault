@@ -11,7 +11,7 @@ from typing import Iterator
 import orjson
 
 from chatvault.adapters._html_lite import html_to_text
-from chatvault.adapters.base import make_attachment, make_block, make_conversation, make_message
+from chatvault.adapters.base import make_attachment, make_block, make_conversation, make_message, normalize_title
 
 platform = "gemini"
 name = "gemini_takeout"
@@ -163,7 +163,223 @@ def _turn_messages(record: dict, msg_idx: int) -> list[dict]:
     return messages
 
 
-def _parse_standalone_event(record: dict) -> dict:
+# ---- Canvas events and standalone-event identity -------------------------
+#
+# A "Created Gemini Canvas titled <name>" activity record is the delivered
+# artifact (a page, script, letter, report), not dialogue. Both Takeout
+# variants hold it differently: JSON puts the name in `title` and the content
+# in subtitles[0].name; HTML delivers one zone `titled\xa0<name><br><content>`
+# (the name ends at the first <br>). Both become the same conversation: a
+# `Gemini Canvas: <name>` title, one summary text block, and the content as an
+# attachment with role "artifact" — never chat text, never a title. Verified
+# against 3016 (JSON) and 4120 (HTML): same name, same 50,171-char content,
+# same second.
+
+CANVAS_PREFIX_RE = re.compile(r"^\s*Created Gemini Canvas titled\s*")
+_FENCE_RE = re.compile(r"\A\s*```([A-Za-z0-9_+#.-]*)[ \t]*\n(.*?)\n?```\s*\Z", re.DOTALL)
+_HTML_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.DOTALL | re.IGNORECASE)
+_MD_HEADING_RE = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t]*$", re.MULTILINE)
+_PROBABLE_SOURCE_WINDOW_MIN = 5.0
+_FENCE_KINDS = {
+    "html": ("html", "text/html"),
+    "javascript": ("js", "text/javascript"),
+    "js": ("js", "text/javascript"),
+    "typescript": ("ts", "text/typescript"),
+    "python": ("py", "text/x-python"),
+    "py": ("py", "text/x-python"),
+    "bash": ("sh", "text/x-shellscript"),
+    "sh": ("sh", "text/x-shellscript"),
+    "shell": ("sh", "text/x-shellscript"),
+    "zsh": ("zsh", "text/x-shellscript"),
+    "latex": ("tex", "application/x-tex"),
+    "tex": ("tex", "application/x-tex"),
+    "markdown": ("md", "text/markdown"),
+    "md": ("md", "text/markdown"),
+    "json": ("json", "application/json"),
+    "css": ("css", "text/css"),
+    "xml": ("xml", "application/xml"),
+    "yaml": ("yaml", "text/yaml"),
+    "sql": ("sql", "application/sql"),
+    "svg": ("svg", "image/svg+xml"),
+}
+
+
+def is_canvas_title(title: str | None) -> bool:
+    return bool(title and CANVAS_PREFIX_RE.match(title))
+
+
+def _squash(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _second_utc(time_: str | None) -> str:
+    """ISO time truncated to the second, UTC — the JSON export carries
+    milliseconds, the HTML export does not, and the same event must hash the
+    same in both."""
+    if not time_:
+        return ""
+    try:
+        dt = datetime.fromisoformat(time_.replace("Z", "+00:00"))
+    except ValueError:
+        return time_
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def event_native_id(title: str, time_: str | None) -> str:
+    """Identity of a standalone (no /app/<id>) event. Hashes the *normalised*
+    title and the time to the second, so NBSP-vs-space and ms-vs-no-ms
+    differences between Takeout variants no longer mint a second row."""
+    key = f"{normalize_title(title) or ''}|{_second_utc(time_)}"
+    return "event:" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+
+
+def canvas_native_id(name: str, time_: str | None) -> str:
+    key = f"{_squash(name).casefold()}|{_second_utc(time_)}"
+    return "canvas:" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+
+
+def _split_fence(content: str) -> tuple[str, str]:
+    """(language, inner) for content wrapped in one outer code fence, else
+    ("", content)."""
+    m = _FENCE_RE.match(content)
+    if not m:
+        return "", content.strip()
+    return m.group(1).lower(), m.group(2).strip("\n")
+
+
+def _canvas_name_fallback(content: str) -> str:
+    m = _HTML_TITLE_RE.search(content)
+    if m and _squash(html_mod.unescape(m.group(1))):
+        return _squash(html_mod.unescape(m.group(1)))
+    m = _MD_HEADING_RE.search(content)
+    if m and _squash(m.group(1)):
+        return _squash(m.group(1))
+    for line in content.splitlines():
+        if line.strip():
+            return _squash(line)[:80]
+    return "Untitled canvas"
+
+
+def split_canvas_json(title: str, subtitles: list | None) -> tuple[str, str]:
+    """(name, content) from a JSON-variant canvas record."""
+    name = CANVAS_PREFIX_RE.sub("", title, count=1)
+    content = ""
+    if subtitles:
+        st = subtitles[0]
+        content = (st.get("name") if isinstance(st, dict) else str(st)) or ""
+    return name, content
+
+
+def split_canvas_html(zone_html: str) -> tuple[str, str]:
+    """(name, content) from an HTML-variant zone: everything after the verb up
+    to the first <br> is the name, everything after it the content."""
+    zone = CANVAS_PREFIX_RE.sub("", zone_html.lstrip(), count=1)
+    head, sep, rest = zone.partition("<br>")
+    name = html_mod.unescape(re.sub(r"<[^>]+>", "", head))
+    content = html_mod.unescape(re.sub(r"<br\s*/?>", "\n", rest)) if sep else ""
+    return name, content
+
+
+def probable_source_chat(time_: str | None, assistant_times: list[tuple[str, str | None]]) -> list[dict]:
+    """Gemini conversations with an assistant message within five minutes of
+    the canvas event, nearest first. Takeout carries no link between a canvas
+    and its chat, so this is a recorded candidate list, never a link."""
+    if not time_:
+        return []
+    try:
+        t0 = datetime.fromisoformat(_second_utc(time_).replace("Z", "+00:00"))
+    except ValueError:
+        return []
+    hits: dict[str, float] = {}
+    for native_id, at in assistant_times:
+        if not at:
+            continue
+        try:
+            t1 = datetime.fromisoformat(_second_utc(at).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        minutes = abs((t1 - t0).total_seconds()) / 60
+        if minutes <= _PROBABLE_SOURCE_WINDOW_MIN and minutes < hits.get(native_id, 1e9):
+            hits[native_id] = minutes
+    return [{"native_id": n, "minutes_apart": round(m, 2)} for n, m in sorted(hits.items(), key=lambda kv: (kv[1], kv[0]))]
+
+
+def canvas_conversation(
+    *,
+    name: str,
+    content: str,
+    time_: str | None,
+    variant: str,
+    raw: dict,
+    source_path: str,
+    msg_raw: dict | None = None,
+    source_chats: list[dict] | None = None,
+) -> dict:
+    """The canonical conversation for one canvas, identical for both export
+    variants (and for `chatvault repair gemini-canvas`, which calls this with
+    the stored raw record)."""
+    lang, inner = _split_fence(content)
+    name = _squash(name) or _canvas_name_fallback(inner)
+    ext, mime = _FENCE_KINDS.get(lang, ("md", "text/markdown") if not lang else (lang[:8] or "txt", "text/plain"))
+    kind = lang or "markdown"
+    filename = re.sub(r"[\\/:*?\"<>|]+", "-", name)[:100].strip(" .") or "canvas"
+    summary = f"Created Gemini Canvas “{name}” — {kind}, {len(inner)} chars. Stored as artifact."
+    block_raw = {"source": "gemini_canvas", "variant": variant, "probable_source_chat": source_chats or []}
+    blocks = [
+        make_block(0, "text", summary, raw=block_raw),
+        make_block(
+            1,
+            "attachment",
+            "",
+            raw={"filename": f"{filename}.{ext}", "source": "gemini_canvas"},
+            attachment=make_attachment(
+                filename=f"{filename}.{ext}",
+                mime=mime,
+                ext=ext,
+                bytes_=len(inner),
+                content=inner,
+                availability="text",
+                role="artifact",
+                raw={"source": "gemini_canvas", "variant": variant},
+            ),
+        ),
+    ]
+    message = make_message(0, "system", None, time_, blocks, raw={**(msg_raw or {}), "event_only": True, "canvas": True})
+    return make_conversation(
+        platform=platform,
+        native_id=canvas_native_id(name, time_),
+        title=f"Gemini Canvas: {name}",
+        project=None,
+        started_at=time_,
+        ended_at=time_,
+        source_path=source_path,
+        raw={**raw, "event_only": True, "canvas": True, "probable_source_chat": source_chats or []},
+        messages=[message],
+    )
+
+
+def canvas_from_html_record(rec: dict, source_path: str, assistant_times: list[tuple[str, str | None]]) -> dict:
+    """Canvas conversation from a parsed HTML cell (`_parse_html_cell`)."""
+    name, content = split_canvas_html(rec["zone_html"])
+    return canvas_conversation(
+        name=name,
+        content=content,
+        time_=rec["time"],
+        variant="html",
+        raw={"html_cell": True, "raw_cell": rec["raw_cell"]},
+        source_path=source_path,
+        msg_raw={**({"timestamp_unparsed": True} if rec.get("timestamp_unparsed") else {}), "html_cell": True},
+        source_chats=probable_source_chat(rec["time"], assistant_times),
+    )
+
+
+def _assistant_times(conv: dict) -> list[tuple[str, str | None]]:
+    return [(conv["native_id"], m["created_at"]) for m in conv["messages"] if m["role"] == "assistant"]
+
+
+def _parse_standalone_event(record: dict, assistant_times: list | None = None) -> dict:
     """One of the 91 no-id records: a real product event (Canvas created,
     draft selected, feedback given), not a dialogue turn. No conversation
     to attach it to, so it becomes its own single-message conversation
@@ -174,7 +390,18 @@ def _parse_standalone_event(record: dict) -> dict:
     itself does not apply tags, consistent with every other adapter."""
     title = record.get("title") or "(untitled Gemini event)"
     time_ = record.get("time")
-    native_id = "event:" + hashlib.sha1(f"{title}|{time_}".encode("utf-8")).hexdigest()[:16]
+    if is_canvas_title(title):
+        name, content = split_canvas_json(title, record.get("subtitles"))
+        return canvas_conversation(
+            name=name,
+            content=content,
+            time_=time_,
+            variant="json",
+            raw=record,
+            source_path="",  # filled in by caller with the real path
+            source_chats=probable_source_chat(time_, assistant_times or []),
+        )
+    native_id = event_native_id(title, time_)
 
     blocks = [make_block(0, "system", title, raw=record)]
     subtitles = record.get("subtitles") or []
@@ -350,6 +577,7 @@ def _parse_html_cell(cell: str) -> dict | None:
         "attachments": attachments,  # (stored_filename, display_name)
         "response_html": response_html,
         "timestamp_unparsed": timestamp_unparsed,
+        "zone_html": prompt_zone,
         "raw_cell": cell,
     }
 
@@ -397,6 +625,7 @@ def _parse_html(path: Path) -> Iterator[dict]:
 
     groups: dict[str, list[dict]] = {}
     standalone: list[dict] = []
+    produced: list[dict] = []  # dialogue conversations, for the canvases' probable_source_chat
     for c in cells:
         rec = _parse_html_cell(c)
         if rec is None:
@@ -420,7 +649,7 @@ def _parse_html(path: Path) -> Iterator[dict]:
         if not messages:
             continue
         first_title = recs_sorted[0]["title"]
-        yield make_conversation(
+        conv = make_conversation(
             platform=platform,
             native_id=conv_id,
             title=first_title[:200] or None,
@@ -431,10 +660,16 @@ def _parse_html(path: Path) -> Iterator[dict]:
             raw={"activity_record_count": len(recs_sorted), "conversation_url": f"https://gemini.google.com/app/{conv_id}"},
             messages=messages,
         )
+        produced.append(conv)
+        yield conv
 
+    assistant_times = [t for c in produced for t in _assistant_times(c)]
     for r in standalone:
+        if is_canvas_title(r["title"]):
+            yield canvas_from_html_record(r, str(path), assistant_times)
+            continue
         title = r["title"] or "(untitled Gemini event)"
-        native_id = "event:" + hashlib.sha1(f"{title}|{r['time']}".encode("utf-8")).hexdigest()[:16]
+        native_id = event_native_id(title, r["time"])
         blocks = [make_block(0, "system", title, raw=r["raw_cell"])]
         message = make_message(
             0,
@@ -474,6 +709,7 @@ def parse(path: Path) -> Iterator[dict]:
 
     groups: dict[str, list[dict]] = {}
     standalone: list[dict] = []
+    produced: list[dict] = []
 
     for r in records:
         if not isinstance(r, dict):
@@ -505,7 +741,7 @@ def parse(path: Path) -> Iterator[dict]:
         if first_title.startswith("Prompted "):
             first_title = first_title[len("Prompted "):]
 
-        yield make_conversation(
+        conv = make_conversation(
             platform=platform,
             native_id=conv_id,
             title=first_title[:200] or None,
@@ -516,8 +752,11 @@ def parse(path: Path) -> Iterator[dict]:
             raw={"activity_record_count": len(recs_sorted), "conversation_url": f"https://gemini.google.com/app/{conv_id}"},
             messages=messages,
         )
+        produced.append(conv)
+        yield conv
 
+    assistant_times = [t for c in produced for t in _assistant_times(c)]
     for r in standalone:
-        conv = _parse_standalone_event(r)
+        conv = _parse_standalone_event(r, assistant_times)
         conv["source_path"] = str(path)
         yield conv

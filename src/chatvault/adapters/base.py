@@ -28,6 +28,30 @@ BLOCK_TYPES = {
 }
 
 
+TITLE_MAX_CHARS = 200
+
+
+def normalize_title(raw: str | None) -> str | None:
+    """The one title rule: a title is a label, never content. Whitespace
+    (NBSP, newlines, runs of spaces) collapses to single spaces; longer than
+    TITLE_MAX_CHARS is cut at the last word boundary and ends in "…"; empty
+    becomes None. Applied by make_conversation() and again by the loader, so
+    no adapter can store a title that breaks it."""
+    if raw is None:
+        return None
+    text = " ".join(str(raw).split())  # str.split() treats NBSP and newlines as whitespace
+    if not text:
+        return None
+    if len(text) <= TITLE_MAX_CHARS:
+        return text
+    cut = text[: TITLE_MAX_CHARS - 1]
+    if text[TITLE_MAX_CHARS - 1] != " ":
+        boundary = cut.rfind(" ")
+        if boundary > 0:
+            cut = cut[:boundary]
+    return cut.rstrip() + "…"
+
+
 class Adapter(Protocol):
     platform: str
     name: str
@@ -115,7 +139,7 @@ def make_conversation(
     return {
         "platform": platform,
         "native_id": native_id,
-        "title": title,
+        "title": normalize_title(title),
         "project": project,
         "started_at": started_at,
         "ended_at": ended_at,

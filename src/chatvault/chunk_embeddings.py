@@ -66,6 +66,7 @@ class ChunkIndexResult:
     unavailable: bool = False
     error: str = ""
     shrunk: int = 0
+    purged: int = 0  # stale passage vectors removed
 
 
 @dataclass
@@ -141,6 +142,41 @@ def pending_conv_ids(conn: sqlite3.Connection) -> list[int]:
     return [r[0] for r in rows]
 
 
+_STALE_FROM = """
+    FROM block_embedding_meta bm
+    LEFT JOIN blocks b ON b.id = bm.block_id
+    LEFT JOIN messages m ON m.id = b.msg_id
+    LEFT JOIN v_conversations c ON c.id = m.conv_id
+    WHERE b.id IS NULL OR c.id IS NULL OR m.excluded = 1 OR b.excluded = 1
+       OR b.type != 'text' OR m.role NOT IN ('user', 'assistant') OR length(b.text) < ?
+"""
+
+
+def stale_block_ids(conn: sqlite3.Connection, conv_ids: list[int] | None = None) -> list[int]:
+    """Passage vectors whose block is no longer eligible: the block or its
+    message was excluded, the conversation is superseded/excluded, the role or
+    type changed, or the text shrank below MIN_CHARS."""
+    sql = f"SELECT bm.block_id {_STALE_FROM}"  # noqa: S608
+    params: list = [MIN_CHARS]
+    if conv_ids is not None:
+        if not conv_ids:
+            return []
+        sql += f" AND bm.conv_id IN ({','.join('?' * len(conv_ids))})"
+        params += list(conv_ids)
+    return [r[0] for r in conn.execute(sql, params).fetchall()]
+
+
+def purge_stale(conn: sqlite3.Connection, conv_ids: list[int] | None = None) -> int:
+    """Deletes the stale passage vectors (derived data, so deletion is fine —
+    `embed --chunks` rebuilds whatever becomes eligible again). Returns how many."""
+    ids = stale_block_ids(conn, conv_ids)
+    for block_id in ids:
+        conn.execute("DELETE FROM block_embeddings WHERE block_id = ?", (block_id,))
+        conn.execute("DELETE FROM block_embedding_meta WHERE block_id = ?", (block_id,))
+    conn.commit()
+    return len(ids)
+
+
 def status(conn: sqlite3.Connection) -> dict:
     eligible = conn.execute(f"SELECT COUNT(*) {_ELIGIBLE_FROM}", (MIN_CHARS,)).fetchone()[0]  # noqa: S608
     embedded = conn.execute(
@@ -153,6 +189,7 @@ def status(conn: sqlite3.Connection) -> dict:
         "embedded": embedded,
         "pending": eligible - embedded,
         "rows": total_rows,
+        "stale": len(stale_block_ids(conn)),
         "settings": chunk_settings().label(),
     }
 
@@ -182,12 +219,14 @@ def index_chunks(
     concurrent `embed` on the same DB is never blocked for long. Stops on the first unreachable-Ollama error."""
     settings = chunk_settings()
     label = settings.label()
+    scoped = conv_ids is not None
     if conv_ids is None:
         conv_ids = (
             [r[0] for r in conn.execute("SELECT id FROM v_conversations").fetchall()]
             if force else pending_conv_ids(conn)
         )
     result = ChunkIndexResult()
+    result.purged = purge_stale(conn, list(conv_ids) if scoped else None)
     shrunk_before = shrunk_count()
     total = len(conv_ids)
     for n, conv_id in enumerate(conv_ids, start=1):

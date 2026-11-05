@@ -251,6 +251,16 @@ def audit_blocks(
 # ────────────────────────── markdown rendering ──────────────────────────
 
 
+def title_violations(conn: sqlite3.Connection, platform: str) -> int:
+    """Live titles of `platform` that break the title rule (over 200 chars or
+    spanning lines). The same check `chatvault verify` runs vault-wide."""
+    return conn.execute(
+        "SELECT COUNT(*) FROM v_conversations WHERE platform = ? AND (length(title) > 200 "
+        "OR title LIKE '%' || char(10) || '%' OR title LIKE '%' || char(13) || '%')",
+        (platform,),
+    ).fetchone()[0]
+
+
 def render_shape_report(result: ShapeAuditResult) -> str:
     lines: list[str] = []
     title = f"# Shape audit — {result.platform}"

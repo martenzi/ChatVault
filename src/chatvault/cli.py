@@ -93,6 +93,8 @@ app.add_typer(graph_app, name="graph", rich_help_panel="Neo4j Graph")
 app.add_typer(sources_app, name="sources", rich_help_panel="Getting Data In")
 app.add_typer(live_roots_app, name="live-roots", rich_help_panel="Getting Data In")
 app.add_typer(curation_app, name="curation", rich_help_panel="Curation & Data Quality")
+repair_app = typer.Typer(no_args_is_help=True, add_completion=False, help="One-off, idempotent repairs of rows stored before a rule existed.")
+app.add_typer(repair_app, name="repair", rich_help_panel="Curation & Data Quality")
 app.add_typer(attachments_app, name="attachments", rich_help_panel="Attachments")
 app.add_typer(projects_app, name="projects", rich_help_panel="Projects")
 app.add_typer(stash_app, name="stash", rich_help_panel="Second Brain v0 (stash)")
@@ -743,6 +745,49 @@ def live_roots_normalise(apply: bool = typer.Option(False, "--apply", help="Writ
         console.print("[dim]dry run — add --apply to write[/dim]")
 
 
+@repair_app.command("gemini-canvas")
+def repair_gemini_canvas(
+    apply: bool = typer.Option(False, "--apply", help="Write the changes. Without it: report only. Needs a `chatvault backup` from the last hour."),
+) -> None:
+    """Bring stored Gemini standalone events to the shape the adapter now emits.
+
+    Canvases become `Gemini Canvas: <name>` with a one-line summary and the content as an
+    artifact attachment (out of chat text, FTS and embeddings); other events get the
+    normalised-title id; cross-export copies fold into one live row (superseded_by, never
+    deleted); every title in the vault is normalised to one line of at most 200 chars.
+    Idempotent. Afterwards run `chatvault embed --rescan` to refresh the changed vectors."""
+    from chatvault import repair as repair_mod
+
+    config = load_config()
+    if apply and not repair_mod.recent_backup_exists(config):
+        console.print("[red]No backup from the last hour. Run `chatvault backup --label pre-canvas-repair` first.[/red]")
+        raise typer.Exit(code=1)
+    conn = connect(config)
+    try:
+        rep = repair_mod.gemini_canvas(conn, apply=apply)
+    finally:
+        conn.close()
+    console.print(
+        f"gemini standalone events: {rep['events_selected']} selected · canvases {rep['canvases_base']} base / "
+        f"{rep['canvases_live']} live · other events {rep['events_other_base']} base / {rep['events_other_live']} live"
+    )
+    for s_ in rep["skipped"]:
+        console.print(f"[yellow]skipped {s_['id']}: {s_['why']}[/yellow]")
+    console.print(f"rows to rewrite: {rep['rows_to_rewrite']} · non-canvas event ids changed: {rep['event_id_changes']}")
+    for d in rep["duplicate_pairs"]:
+        console.print(f"duplicate: keep {d['kept']}, fold {d['folded']} — {d['name']} ({d['kept_chars']} vs {d['folded_chars']} chars)")
+    console.print(f"titles normalised (all rows): {sum(rep['titles_normalised'].values())} {rep['titles_normalised']}")
+    console.print(f"  of which live: {sum(rep['titles_normalised_live'].values())} {rep['titles_normalised_live']}")
+    if apply:
+        console.print(
+            f"tagged gemini/canvas: {rep['tagged']} · stale conversation vectors removed: {rep['stale_conv_vectors_removed']} · "
+            f"stale passages removed: {rep['stale_passages_removed']}"
+        )
+        console.print("Next: `chatvault embed --rescan` to refresh vectors for the changed conversations.")
+    else:
+        console.print("[dim]dry run — add --apply to write[/dim]")
+
+
 @app.command("flag-dates", rich_help_panel="Curation & Data Quality")
 def flag_dates(
     apply: bool = typer.Option(False, "--apply", help="Write the tags. Without it: count only."),
@@ -1002,6 +1047,7 @@ def audit_shapes(
     across every block regardless of current type; never writes to the DB."""
     config = load_config()
     conn = connect(config)
+    bad_titles = 0
     try:
         if mode == "reasoning":
             sweep = shapes_mod.reasoning_sweep(conn, platform)
@@ -1009,6 +1055,8 @@ def audit_shapes(
         elif mode == "shapes":
             result = shapes_mod.audit_blocks(conn, platform, type_filter=type_)
             text = shapes_mod.render_shape_report(result)
+            bad_titles = shapes_mod.title_violations(conn, platform)
+            text += f"\n\n## Title rule\n\n{bad_titles} live title(s) over 200 chars or spanning lines (must be 0).\n"
         else:
             console.print(f"[red]unknown --mode {mode!r}, expected 'shapes' or 'reasoning'[/red]")
             raise typer.Exit(code=1)
@@ -1018,6 +1066,8 @@ def audit_shapes(
     shapes_mod.write_report(text, out)
     if out:
         console.print(f"wrote {out}")
+    if mode == "shapes" and bad_titles:
+        raise typer.Exit(code=1)
 
 
 def _render_ingest_report(summary, path: Path, *, dry_run: bool, verbose: bool, logs_dir: Path) -> None:
@@ -2993,7 +3043,7 @@ def embed(
             cs = chunk_embeddings_mod.status(conn)
             console.print(
                 f"[dim]passage index (embed --chunks): {cs['embedded']} of {cs['eligible']} eligible blocks "
-                f"embedded, {cs['pending']} pending[/dim]"
+                f"embedded, {cs['pending']} pending, {cs['stale']} stale[/dim]"
             )
             return
 
@@ -3048,10 +3098,12 @@ def _embed_chunks(conn, *, force: bool, status: bool) -> None:
         st = chunk_embeddings_mod.status(conn)
         console.print(
             f"passage index: {st['embedded']} of {st['eligible']} eligible blocks (user/assistant text, "
-            f">= {chunk_embeddings_mod.MIN_CHARS} chars) embedded, {st['pending']} pending · {st['settings']}"
+            f">= {chunk_embeddings_mod.MIN_CHARS} chars) embedded, {st['pending']} pending, {st['stale']} stale · {st['settings']}"
         )
         if status:
             return
+        if st["stale"]:
+            console.print(f"removed {chunk_embeddings_mod.purge_stale(conn)} stale passage vector(s) (excluded, superseded or too short now)")
         if not force and not st["pending"]:
             console.print("nothing to embed")
             return

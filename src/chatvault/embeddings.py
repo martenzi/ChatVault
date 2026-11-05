@@ -453,6 +453,27 @@ def status(conn: sqlite3.Connection) -> dict:
     }
 
 
+def purge_stale(conn: sqlite3.Connection) -> int:
+    """Deletes conversation vectors of conversations that are superseded or
+    excluded (derived data; `embed` rebuilds whatever becomes live again).
+    Returns how many."""
+    ids = [
+        r[0]
+        for r in conn.execute(
+            """
+            SELECT em.conv_id FROM embedding_meta em
+            JOIN conversations c ON c.id = em.conv_id
+            WHERE c.superseded_by IS NOT NULL OR c.excluded = 1
+            """
+        ).fetchall()
+    ]
+    for conv_id in ids:
+        conn.execute("DELETE FROM conv_embeddings WHERE conv_id = ?", (conv_id,))
+        conn.execute("DELETE FROM embedding_meta WHERE conv_id = ?", (conv_id,))
+    conn.commit()
+    return len(ids)
+
+
 def semantic_search(
     conn: sqlite3.Connection,
     query: str,

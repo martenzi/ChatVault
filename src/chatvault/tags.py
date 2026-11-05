@@ -346,6 +346,41 @@ def flag_model_unknown(conn: sqlite3.Connection, conv_ids: list[int]) -> int:
     return applied
 
 
+def flag_gemini_canvas(conn: sqlite3.Connection, conv_ids: list[int] | None = None) -> int:
+    """Tags `gemini/canvas` on conversations the Gemini adapter (or
+    `repair gemini-canvas`) shaped as a canvas: the message raw carries the
+    adapter's `canvas` marker. Same post-load shape as flag_timestamp_unparsed:
+    adapters mark, this pass tags. `conv_ids=None` covers every conversation."""
+    sql = (
+        "SELECT DISTINCT c.id FROM conversations c JOIN messages m ON m.conv_id = c.id "
+        "WHERE c.platform = 'gemini' AND json_extract(m.raw_json, '$.canvas') = 1"
+    )
+    params: list = []
+    if conv_ids is not None:
+        if not conv_ids:
+            return 0
+        sql += f" AND c.id IN ({','.join('?' * len(conv_ids))})"
+        params = list(conv_ids)
+    rows = conn.execute(sql, params).fetchall()
+    if not rows:
+        return 0
+    tag_id = _get_or_create_tag(conn, "gemini/canvas")
+    now = _now()
+    applied = 0
+    for row in rows:
+        cur = conn.execute(
+            """
+            INSERT INTO tag_links (tag_id, target_type, target_id, source, created_at)
+            VALUES (?, 'conversation', ?, 'rule', ?)
+            ON CONFLICT(tag_id, target_type, target_id) DO NOTHING
+            """,
+            (tag_id, row["id"], now),
+        )
+        applied += cur.rowcount
+    conn.commit()
+    return applied
+
+
 def flag_shape_unclear(conn: sqlite3.Connection, conv_ids: list[int]) -> int:
     """Applies review/shape-unclear (docs/50_SPEC_ingestion_fidelity_v1.md
     §4.4 rule 2 / §7.6) to every conversation among `conv_ids` that still

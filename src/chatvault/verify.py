@@ -48,6 +48,14 @@ def run(conn: sqlite3.Connection) -> list[VerifyResult]:
     ).fetchone()[0]
     results.append(VerifyResult("uid uniqueness", dup_uids == 0, f"{dup_uids} duplicated uid group(s)"))
 
+    bad_titles = conn.execute(
+        "SELECT COUNT(*) FROM v_conversations WHERE length(title) > 200 OR title LIKE '%' || char(10) || '%' "
+        "OR title LIKE '%' || char(13) || '%'"
+    ).fetchone()[0]
+    results.append(
+        VerifyResult("title rule", bad_titles == 0, f"{bad_titles} live title(s) over 200 chars or spanning lines")
+    )
+
     sample = conn.execute("SELECT id, content_hash FROM conversations ORDER BY RANDOM() LIMIT 5").fetchall()
     results.append(VerifyResult("hash spot-check", True, f"sampled {len(sample)} conversation(s) for content_hash presence"))
 

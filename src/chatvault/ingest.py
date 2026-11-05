@@ -487,6 +487,7 @@ def ingest_path(
             tags_mod.flag_model_unknown(conn, touched_conv_ids)
             tags_mod.flag_shape_unclear(conn, touched_conv_ids)
             tags_mod.flag_timestamp_unparsed(conn, touched_conv_ids)
+            tags_mod.flag_gemini_canvas(conn, touched_conv_ids)
             dates_mod.flag(conn, touched_conv_ids)
             if host != local:
                 tags_mod.flag_host(conn, touched_conv_ids, host)

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import orjson
 
 from chatvault import hashing
+from chatvault.adapters.base import normalize_title
 
 
 def _json(obj) -> str:
@@ -369,6 +370,7 @@ def reprocess_conversation(
     source_file_id: int,
     position: int,
 ) -> LoadResult:
+    cir["title"] = normalize_title(cir.get("title"))
     rows = conn.execute(
         "SELECT id, uid, native_id, content_hash FROM conversations WHERE source_file_id IS ? ORDER BY id",
         (source_file_id,),
@@ -526,6 +528,7 @@ def load_conversation(
 ) -> LoadResult:
     """`backfill_timestamps` (set only by `--reprocess`) fills NULL timestamps on an
     identical, already-stored conversation; a normal ingest never touches it."""
+    cir["title"] = normalize_title(cir.get("title"))  # title rule holds for every adapter
     hashes = _compute_hashes(cir)
     content_hash = hashes["content_hash"]
     head_hash = hashes["head_hash"]
